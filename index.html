@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#6ec6ff">
+<meta name="description" content="Roof Rush: a free mobile-friendly roofing game by Cloudy. Tear off, underlay, nail the shingles, beat the storm.">
+<title>Roof Rush – a Cloudy game</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%236ec6ff'/%3E%3Cpath d='M8 38 32 14l24 24z' fill='%23ff8a3d'/%3E%3Crect x='16' y='38' width='32' height='16' fill='%23fff3c4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" aria-label="Roof Rush game"></canvas>
+
+  <section id="title" class="screen">
+    <div class="logo"><span class="l1">ROOF</span><span class="l2">RUSH</span></div>
+    <p class="tag">Rip it. Roll it. Nail it. Beat the storm!</p>
+    <div class="btns">
+      <button id="btnPlay" class="btn big">Play</button>
+      <button id="btnHow" class="btn">How to Play</button>
+      <button id="btnSound" class="btn ghost">Sound: Off</button>
+    </div>
+    <p class="foot">A free game by <a href="https://itscloudy96.github.io/game-dev-kits/" target="_blank" rel="noopener">Cloudy</a> · <a id="btnReset" href="#">Reset progress</a></p>
+  </section>
+
+  <section id="howto" class="screen hidden">
+    <div class="panel">
+      <h2>How to Play</h2>
+      <ol class="how">
+        <li><b>Tear off.</b> Swipe or tap the old shingles to rip them off. Tough ones take more hits.</li>
+        <li><b>Underlayment.</b> Swipe across the bare deck to roll out the waterproof felt.</li>
+        <li><b>Shingle it.</b> A shingle row slides side to side. <b>Tap</b> when it lines up with the dashed chalk line. Closer = better.</li>
+      </ol>
+      <p class="how2">Finish before the storm arrives! Stars come from speed and accuracy. Spend your earnings in the <b>Garage</b> on a better tool, nail gun, crew helper, and weather radio.</p>
+      <button id="btnHowBack" class="btn big">Got it</button>
+    </div>
+  </section>
+
+  <section id="board" class="screen hidden">
+    <div class="topbar"><button id="btnBoardBack" class="btn small ghost">‹ Menu</button><div class="money" id="boardMoney">$0</div></div>
+    <div class="tabs"><button id="tabJobs" class="tab on">Jobs</button><button id="tabGarage" class="tab">Garage</button></div>
+    <div id="jobs" class="list"></div>
+    <div id="garage" class="list hidden"></div>
+  </section>
+
+  <section id="result" class="screen hidden">
+    <div class="panel">
+      <h2 id="resTitle">Job Complete!</h2>
+      <div id="resStars" class="stars"></div>
+      <p id="resMsg" class="msg"></p>
+      <table id="resTable"></table>
+      <div class="btns">
+        <button id="btnNext" class="btn big">Next Job</button>
+        <button id="btnRetry" class="btn">Retry</button>
+        <button id="btnGarage" class="btn">Garage</button>
+        <button id="btnMenu" class="btn ghost">Job Board</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="pause" class="screen hidden">
+    <div class="panel">
+      <h2>Paused</h2>
+      <div class="btns">
+        <button id="btnResume" class="btn big">Resume</button>
+        <button id="btnSound2" class="btn">Sound: Off</button>
+        <button id="btnQuit" class="btn ghost">Quit job</button>
+      </div>
+    </div>
+  </section>
+</div>
+<script src="game.js"></script>
+</body>
+</html>
