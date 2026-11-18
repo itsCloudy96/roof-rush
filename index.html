@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#1d3b6b">
+<meta name="description" content="Roof Rush: a free mobile roofing business tycoon by Cloudy. Win bids, hire crews, beat the storms, and grow a roofing empire.">
+<title>Roof Rush – roofing tycoon by Cloudy</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%236ec6ff'/%3E%3Cpath d='M8 38 32 14l24 24z' fill='%23ff8a3d'/%3E%3Crect x='16' y='38' width='32' height='16' fill='%23fff3c4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="hud">
+    <div class="r1">
+      <div class="cash" id="cash">$0</div>
+      <div class="rep" id="rep" title="Reputation"><span class="stars"><i id="repfill">★★★★★</i>★★★★★</span><b id="repnum">2.0</b></div>
+      <div class="date" id="date">Apr 1 · Year 1</div>
+    </div>
+    <div class="r2">
+      <div class="vbar" id="vbar"><i id="vfill"></i><span id="vtxt"></span></div>
+      <div class="speed" id="speed">
+        <button data-sp="0" aria-label="Pause"><svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg></button>
+        <button data-sp="1">1x</button><button data-sp="2">2x</button><button data-sp="4">4x</button>
+      </div>
+    </div>
+  </header>
+  <div id="townwrap"><canvas id="town" aria-label="Your town"></canvas><div id="chips"></div><div id="toasts"></div></div>
+  <main id="panel"></main>
+  <nav id="nav">
+    <button data-tab="leads"><svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z M9 8h6 M9 12h6 M9 16h4"/></svg><span>Leads</span><em id="b-leads"></em></button>
+    <button data-tab="jobs"><svg viewBox="0 0 24 24"><path d="M3 12 12 4l9 8 M6 11v9h12v-9 M10 20v-5h4v5"/></svg><span>Jobs</span><em id="b-jobs"></em></button>
+    <button data-tab="crews"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 20c0-4 3-6 6-6s6 2 6 6 M15 15c3 0 6 1.5 6 5"/></svg><span>Crews</span><em id="b-crews"></em></button>
+    <button data-tab="office"><svg viewBox="0 0 24 24"><path d="M5 21V4h9v17 M14 9h5v12 M8 8h3 M8 12h3 M8 16h3 M3 21h18"/></svg><span>Office</span><em id="b-office"></em></button>
+    <button data-tab="goals"><svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg><span>Goals</span><em id="b-goals"></em></button>
+  </nav>
+  <div id="coach" class="hidden"></div>
+  <div id="modal" class="hidden"></div>
+</div>
+<script src="engine.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
