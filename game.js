@@ -1,616 +1,562 @@
-/* Roof Rush – a Cloudy game. Single-file canvas game, no dependencies. MIT licensed. */
+/* Roof Rush Tycoon – UI layer. Engine lives in engine.js. A Cloudy game. MIT. */
 (() => {
 'use strict';
+const E = window.RRE;
 const $ = s => document.querySelector(s);
-const stage = $('#stage'), canvas = $('#c'), ctx = canvas.getContext('2d');
+const KEY = 'roofrush.tycoon.v1';
+const DAY_SEC = 2.0;                 // real seconds per game day at 1x
+const fmt = n => (n < 0 ? '-' : '') + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
+const fmtS = n => { const a = Math.abs(n), sg = n < 0 ? '-' : ''; if (a >= 1e6) return sg + '$' + (a / 1e6).toFixed(a >= 1e7 ? 1 : 2) + 'M'; if (a >= 1e5) return sg + '$' + Math.round(a / 1e3) + 'k'; return fmt(n); };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const rnd = (a, b) => a + Math.random() * (b - a);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-/* ---------- data ---------- */
-const LEVELS = [
-  { name: 'Garden Shed',    cols: 3, rows: 4, pay: 60,  time: 45,  tough: [0, 0],     speed: 1.0,  shingle: '#44546a', wall: '#f2c46d' },
-  { name: 'Cozy Cottage',   cols: 4, rows: 5, pay: 110, time: 50,  tough: [0.12, 0],  speed: 1.12, shingle: '#b5483a', wall: '#fff0c9' },
-  { name: 'Corner Ranch',   cols: 5, rows: 6, pay: 180, time: 58,  tough: [0.25, 0],  speed: 1.25, shingle: '#3b7d6b', wall: '#cfe8f7' },
-  { name: 'Townhouse',      cols: 6, rows: 7, pay: 270, time: 64,  tough: [0.3, 0.1], speed: 1.4,  shingle: '#6b4f9e', wall: '#f7d0d0' },
-  { name: 'Old Farmhouse',  cols: 6, rows: 8, pay: 380, time: 70,  tough: [0.3, 0.2], speed: 1.55, shingle: '#8a5a3c', wall: '#e9e3d0' },
-  { name: 'Grand Mansion',  cols: 7, rows: 9, pay: 520, time: 78, tough: [0.3, 0.25],speed: 1.7,  shingle: '#2f3e46', wall: '#e5d5f2' },
-];
-const UPG = [
-  { id: 'tool', name: 'Tear-off Tool', names: ['Hand Pry Bar', 'Roofing Shovel', 'Power Stripper', 'Mega Stripper'], costs: [40, 120, 300],
-    desc: 'Wider swipe and stronger hits when ripping shingles.' },
-  { id: 'nail', name: 'Nail Gun', names: ['Claw Hammer', 'Nail Gun', 'Pro Nailer', 'Auto Nailer'], costs: [50, 150, 350],
-    desc: 'Slower shingle slider and a bigger perfect zone.' },
-  { id: 'crew', name: 'Crew Helper', names: ['Just you', '1 helper', '2 helpers', '3 helpers'], costs: [80, 200, 450],
-    desc: 'Helpers tear off and roll out underlayment for you.' },
-  { id: 'radio', name: 'Weather Radio', names: ['No radio', 'Basic radio', 'Pro radio'], costs: [30, 90],
-    desc: 'Early storm warnings: +8 seconds per level.' },
-];
-const SAVE_KEY = 'roofrush.v1';
-let save = loadSave();
-function defaultSave() { return { money: 0, up: { tool: 0, nail: 0, crew: 0, radio: 0 }, unlocked: 1, stars: [], best: [], sound: false }; }
-function loadSave() {
-  try { const s = JSON.parse(localStorage.getItem(SAVE_KEY)); if (s && s.up) return Object.assign(defaultSave(), s, { up: Object.assign(defaultSave().up, s.up) }); } catch (e) {}
-  return defaultSave();
+/* ---------- save / load ---------- */
+let S = load() || E.newState();
+let tab = 'leads', speed = S.speed == null ? 2 : S.speed, hidden = false, bid = null, offlineShown = false, lastSave = 0;
+function load() {
+  try { const o = JSON.parse(localStorage.getItem(KEY)); if (o && o.v === 2 && o.crews) { o.fx2 = []; return o; } } catch (e) {}
+  return null;
 }
-function persist() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {} }
+function save() { try { S.saved = Date.now(); S.speed = speed; localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+const wasNew = !load();
 
 /* ---------- audio (off by default) ---------- */
 let actx = null;
-function beep(f, d = 0.08, type = 'square', vol = 0.05, slide = 0) {
-  if (!save.sound) return;
+function tone(f, d, type, v, when) {
+  if (!S.sound) return;
   try {
     actx = actx || new (window.AudioContext || window.webkitAudioContext)();
     if (actx.state === 'suspended') actx.resume();
-    const o = actx.createOscillator(), g = actx.createGain();
-    o.type = type; o.frequency.value = f; if (slide) o.frequency.linearRampToValueAtTime(f + slide, actx.currentTime + d);
-    g.gain.value = vol; g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + d);
-    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + d);
+    const t0 = actx.currentTime + (when || 0), o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || 'triangle'; o.frequency.value = f; g.gain.setValueAtTime(v || 0.06, t0); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+    o.connect(g); g.connect(actx.destination); o.start(t0); o.stop(t0 + d);
   } catch (e) {}
 }
-const sfx = {
-  rip: () => beep(rnd(120, 200), 0.07, 'sawtooth', 0.05, -60),
-  roll: () => beep(rnd(300, 360), 0.05, 'triangle', 0.04),
-  nail: q => beep(q > 0.9 ? 880 : q > 0.5 ? 620 : 240, 0.12, 'square', 0.06),
-  phase: () => { beep(520, 0.1, 'triangle', 0.07); setTimeout(() => beep(780, 0.15, 'triangle', 0.07), 90); },
-  win: () => [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.18, 'triangle', 0.07), i * 120)),
-  lose: () => [330, 262, 196].forEach((f, i) => setTimeout(() => beep(f, 0.25, 'sawtooth', 0.06), i * 160)),
-  buy: () => beep(980, 0.15, 'triangle', 0.07),
+const snd = {
+  cha: () => { [1318, 1760, 2093].forEach((f, i) => tone(f, 0.25, 'triangle', 0.07, i * 0.08)); },
+  win: () => { [523, 659, 784].forEach((f, i) => tone(f, 0.16, 'triangle', 0.07, i * 0.09)); },
+  lose: () => { [330, 262].forEach((f, i) => tone(f, 0.22, 'sawtooth', 0.04, i * 0.14)); },
+  tap: () => tone(700, 0.05, 'square', 0.03),
+  buy: () => { tone(880, 0.1, 'triangle', 0.07); tone(1175, 0.16, 'triangle', 0.07, 0.09); },
+  alert: () => { tone(300, 0.2, 'sawtooth', 0.05); tone(250, 0.3, 'sawtooth', 0.05, 0.18); },
 };
+const buzz = n => { try { navigator.vibrate && navigator.vibrate(n); } catch (e) {} };
 
-/* ---------- layout ---------- */
-let W = 400, H = 860, sx = 1, sy = 1;
-const L = {};
-function resize() {
-  const r = stage.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = 400; H = clamp(Math.round(400 * r.height / Math.max(1, r.width)), 560, 1000);
-  canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
-  sx = canvas.width / W; sy = canvas.height / H;
-  if (G) layoutFor(G.def); else layoutFor(MENU_DEF);
+/* ---------- town canvas ---------- */
+const cv = $('#town'), cx = cv.getContext('2d');
+const TW = 390, RH = 75, MAXROWS = 4; let TH = 150, rowsShown = 2, canvasReady = false;
+const LW0 = 0,  LW = (TW - 16) / 4;
+let sx = 1, sy = 1, T = 0, floats = [], coins = [], flash = 0, hailFx = [], rainFx = [];
+for (let i = 0; i < 90; i++) rainFx.push({ x: Math.random() * TW, y: Math.random() * TH, v: 380 + Math.random() * 260 });
+function syncRows() {
+  const n = Math.min(MAXROWS, S.ups.towns + 1);
+  if (n === rowsShown && canvasReady) return;
+  canvasReady = true; rowsShown = n; TH = n * RH; $('#townwrap').style.aspectRatio = TW + '/' + TH; resizeCanvas();
 }
-function layoutFor(def) {
-  L.cols = def.cols; L.rows = def.rows;
-  L.eave = H - 215;
-  L.roofW = clamp(def.cols * 68, 240, 340);
-  const avail = L.eave - 138;
-  L.rowH = Math.min(58, avail / def.rows);
-  L.roofH = L.rowH * def.rows;
-  L.roofX = (W - L.roofW) / 2;
-  L.roofTop = L.eave - L.roofH;
-  L.cellW = L.roofW / def.cols;
+function resizeCanvas() {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.max(1, Math.round(r.width * dpr)); cv.height = Math.max(1, Math.round(r.height * dpr));
+  sx = cv.width / TW; sy = cv.height / TH;
 }
-const rowY = r => L.eave - (r + 1) * L.rowH;
-
-/* ---------- game state ---------- */
-const MENU_DEF = LEVELS[1];
-let G = null;           // active job
-let MENU = null;        // decorative preview
-let mode = 'menu';      // menu | play | paused | result
-let ptr = { down: false, x: 0, y: 0 };
-let clouds = [], rain = [], flash = 0;
-for (let i = 0; i < 7; i++) clouds.push({ x: rnd(0, 400), y: rnd(120, 330), s: rnd(0.6, 1.3), v: rnd(3, 9) });
-for (let i = 0; i < 160; i++) rain.push({ x: rnd(0, 400), y: rnd(0, 900), v: rnd(520, 760) });
-
-function upLvl(id) { return save.up[id] || 0; }
-function newGame(lv, preview) {
-  const def = LEVELS[lv];
-  const cells = [];
-  let totalHp = 0;
-  for (let i = 0; i < def.cols * def.rows; i++) {
-    const q = Math.random();
-    const hp = q < def.tough[1] ? 3 : q < def.tough[1] + def.tough[0] ? 2 : 1;
-    cells.push({ hp, max: hp, under: false, last: -1, seed: Math.random() });
-    totalHp += hp;
+const hash = n => { let x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const WALLS = ['#f6e3b4', '#e9f1f7', '#f2c9c0', '#cfe8d2', '#e8dcf2', '#f7d99a'];
+const NEWROOF = ['#3b4a63', '#a8412f', '#2f6f5a', '#5b4a8a', '#5a4636', '#2d5f8a'];
+const lotXY = (t, l) => ({ x: 8 + l * LW, y: t * RH });
+function rrect(x, y, w, h, r) { cx.beginPath(); cx.moveTo(x + r, y); cx.arcTo(x + w, y, x + w, y + h, r); cx.arcTo(x + w, y + h, x, y + h, r); cx.arcTo(x, y + h, x, y, r); cx.arcTo(x, y, x + w, y, r); cx.closePath(); }
+function drawHouse(x, y, o) {
+  // sprite box: x..x+77, y..y+50
+  const w = 77, h = 50, g = y + h, kind = o.kind, prog = o.prog || 0;
+  if (kind === 'flat') {
+    const bh = h * 0.62, top = g - bh;
+    cx.fillStyle = o.wall; cx.fillRect(x + 2, top, w - 4, bh);
+    cx.fillStyle = 'rgba(90,120,160,.8)'; for (let r = 0; r < 2; r++) for (let c = 0; c < 6; c++) cx.fillRect(x + 7 + c * 11, top + 6 + r * 11, 7, 7);
+    cx.fillStyle = '#6a5a8a'; cx.fillRect(x + w / 2 - 5, g - 12, 10, 12);
+    // roof deck
+    cx.fillStyle = o.old; cx.fillRect(x, top - 8, w, 9);
+    if (prog > 0) { cx.fillStyle = o.neu; cx.fillRect(x, top - 8, w * prog, 9); }
+    cx.fillStyle = 'rgba(0,0,0,.25)'; cx.fillRect(x, top, w, 1.5);
+    cx.fillStyle = '#9aa6b5'; cx.fillRect(x + w * 0.65, top - 14, 12, 6);
+    return { rx: x, ry: top - 8, rw: w, rh: 9, flat: true };
   }
-  const g = {
-    lv, def, cells, totalHp, remHp: totalHp, remUnder: cells.length,
-    phase: preview ? 'tear' : 'ready', ready: 1.4, t: 0,
-    limit: def.time + 8 * upLvl('radio'), left: def.time + 8 * upLvl('radio'),
-    rowsDone: 0, rows: [], stripT: 0, stripDir: 1, cool: 0,
-    score: 0, combo: 0, perfects: 0, popups: [], parts: [], workers: [], banner: null, shake: 0, doneT: 0,
-  };
-  const crew = upLvl('crew');
-  for (let i = 0; i < crew; i++) g.workers.push({ x: 40 + i * 30, y: L.eave + 50, tgt: -1, work: 0, bob: rnd(0, 6) });
-  return g;
+  const bodyH = h * 0.4, base = g - bodyH, apex = y + 2, x0 = x + 2, x1 = x + w - 2;
+  cx.fillStyle = o.wall; cx.fillRect(x + 8, base, w - 16, bodyH);
+  cx.fillStyle = 'rgba(0,0,0,.08)'; cx.fillRect(x + 8, g - 3, w - 16, 3);
+  cx.fillStyle = '#9ad0ee'; cx.fillRect(x + 14, base + 6, 11, 10); cx.fillRect(x + w - 25, base + 6, 11, 10);
+  cx.fillStyle = '#a5513f'; cx.fillRect(x + w / 2 - 5, g - 15, 10, 15);
+  // roof polygon
+  cx.save(); cx.beginPath(); cx.moveTo(x0, base + 3); cx.lineTo(x + w / 2, apex); cx.lineTo(x1, base + 3); cx.closePath();
+  cx.fillStyle = o.old; cx.fill(); cx.clip();
+  if (o.dents) { cx.fillStyle = 'rgba(30,20,10,.55)'; for (let i = 0; i < 9; i++) { cx.beginPath(); cx.arc(x + 14 + hash(o.seed + i) * 50, apex + 8 + hash(o.seed * 3 + i) * 22, 1.6, 0, 7); cx.fill(); } }
+  if (prog > 0) {
+    const yl = (base + 3) - prog * ((base + 3) - apex);
+    cx.fillStyle = o.neu; cx.fillRect(x, yl, w, h);
+    if (kind === 'metal') { cx.strokeStyle = 'rgba(255,255,255,.55)'; cx.lineWidth = 1; for (let i = x; i < x + w; i += 5) { cx.beginPath(); cx.moveTo(i, yl); cx.lineTo(i, base + 3); cx.stroke(); } }
+    else { cx.strokeStyle = 'rgba(0,0,0,.2)'; cx.lineWidth = 1; for (let yy = base; yy > yl; yy -= 4) { cx.beginPath(); cx.moveTo(x, yy); cx.lineTo(x + w, yy); cx.stroke(); } }
+    cx.fillStyle = 'rgba(255,255,255,.7)'; cx.fillRect(x, yl, w, 1.5);
+  } else { cx.strokeStyle = 'rgba(0,0,0,.18)'; cx.lineWidth = 1; for (let yy = base; yy > apex; yy -= 5) { cx.beginPath(); cx.moveTo(x, yy); cx.lineTo(x + w, yy); cx.stroke(); } }
+  cx.restore();
+  cx.strokeStyle = 'rgba(0,0,0,.35)'; cx.lineWidth = 1.2; cx.beginPath(); cx.moveTo(x0, base + 3); cx.lineTo(x + w / 2, apex); cx.lineTo(x1, base + 3); cx.stroke();
+  return { rx: x, ry: apex, rw: w, rh: base - apex, base, apex };
 }
-function startJob(lv) {
-  if (lv >= save.unlocked || lv < 0) return;
-  G = newGame(lv, false); layoutFor(G.def);
-  G.workers.forEach((w, i) => { w.x = L.roofX + 20 + i * 30; w.y = L.eave + 45; });
-  banner('Phase 1: Tear Off!', 'Swipe over the old shingles', 1.4);
-  setMode('play');
+function drawTruck(x, y, t) {
+  cx.fillStyle = 'rgba(0,0,0,.2)'; cx.beginPath(); cx.ellipse(x + 11, y + 11, 13, 3, 0, 0, 7); cx.fill();
+  cx.fillStyle = '#ff8a3d'; rrect(x, y, 14, 9, 2); cx.fill(); cx.fillStyle = '#fff'; rrect(x + 12, y + 2, 9, 7, 2); cx.fill();
+  cx.fillStyle = '#2a2f3a'; cx.beginPath(); cx.arc(x + 5, y + 10, 2.4, 0, 7); cx.arc(x + 17, y + 10, 2.4, 0, 7); cx.fill();
 }
-function setMode(m) {
-  mode = m;
-  for (const id of ['title', 'howto', 'board', 'result', 'pause']) $('#' + id).classList.add('hidden');
-  if (m === 'menu') $('#title').classList.remove('hidden');
-  else if (m === 'board') $('#board').classList.remove('hidden');
-  else if (m === 'result') $('#result').classList.remove('hidden');
-  else if (m === 'paused') $('#pause').classList.remove('hidden');
-  if (m === 'menu' || m === 'board') { G = null; layoutFor(MENU_DEF); }
+function drawWorker(x, y, t, phase) {
+  const b = Math.sin(t * 9 + phase) * 1.2;
+  cx.fillStyle = '#2f6fdb'; cx.fillRect(x - 2, y - 1 + b, 4, 6);
+  cx.fillStyle = '#ffcfa0'; cx.beginPath(); cx.arc(x, y - 4 + b, 2.6, 0, 7); cx.fill();
+  cx.fillStyle = '#ffd23f'; cx.beginPath(); cx.arc(x, y - 5 + b, 2.8, Math.PI, 0); cx.fill();
+  cx.strokeStyle = '#444'; cx.lineWidth = 1.2; cx.beginPath(); cx.moveTo(x + 2, y + b); cx.lineTo(x + 6, y - 3 + Math.sin(t * 16 + phase) * 3); cx.stroke();
 }
-function banner(t, sub, d) { if (G) G.banner = { t, sub, d, age: 0 }; }
-
-/* ---------- gameplay ---------- */
-const TOOL_R = [14, 24, 36, 50], TOOL_DMG = [1, 1, 2, 2], ROLL_R = [18, 26, 36, 46];
-function cellsNear(x, y, r) {
-  const out = [];
-  const c0 = Math.floor((x - r - L.roofX) / L.cellW), c1 = Math.floor((x + r - L.roofX) / L.cellW);
-  const baseY = L.eave;
-  const r0 = Math.floor((baseY - (y + r)) / L.rowH), r1 = Math.floor((baseY - (y - r)) / L.rowH);
-  for (let rr = Math.max(0, r0); rr <= Math.min(L.rows - 1, r1); rr++)
-    for (let cc = Math.max(0, c0); cc <= Math.min(L.cols - 1, c1); cc++) {
-      const rx = L.roofX + cc * L.cellW, ry = rowY(rr);
-      const dx = Math.max(rx - x, 0, x - (rx + L.cellW)), dy = Math.max(ry - y, 0, y - (ry + L.rowH));
-      if (dx * dx + dy * dy <= r * r) out.push(rr * L.cols + cc);
-    }
-  return out;
-}
-const cellC = i => ({ x: L.roofX + (i % L.cols + 0.5) * L.cellW, y: rowY(Math.floor(i / L.cols)) + L.rowH / 2 });
-function popup(x, y, text, color = '#fff') { G.popups.push({ x, y, text, color, t: 0 }); }
-function chips(x, y, col, n = 6) { for (let i = 0; i < n; i++) G.parts.push({ x, y, vx: rnd(-90, 90), vy: rnd(-170, -30), life: rnd(0.4, 0.8), t: 0, col, s: rnd(3, 6) }); }
-
-function hitTear(i, dmg, quiet) {
-  const c = G.cells[i]; if (c.hp <= 0) return;
-  const dealt = Math.min(dmg, c.hp); c.hp -= dealt; G.remHp -= dealt; c.last = G.t;
-  const p = cellC(i);
-  chips(p.x, p.y, ['#8d6e63', '#a1887f', '#6d4c41'][(Math.random() * 3) | 0], c.hp ? 3 : 8);
-  if (!quiet) sfx.rip();
-  if (c.hp <= 0) { G.score += 5; if (G.remHp <= 0) nextPhase(); }
-}
-function hitUnder(i, quiet) {
-  const c = G.cells[i]; if (c.hp > 0 || c.under) return;
-  c.under = true; G.remUnder--; G.score += 3;
-  const p = cellC(i); chips(p.x, p.y, '#9fb3d9', 3);
-  if (!quiet) sfx.roll();
-  if (G.remUnder <= 0) nextPhase();
-}
-function nextPhase() {
-  sfx.phase();
-  if (G.phase === 'tear') { G.phase = 'under'; banner('Phase 2: Underlayment', 'Swipe to roll out the felt', 1.4); }
-  else if (G.phase === 'under') {
-    G.phase = 'shingle'; G.stripT = 0; G.cool = 0.5;
-    banner('Phase 3: Shingles!', 'Tap when it lines up with the chalk line', 1.8);
-  }
-}
-function brush(dt) {
-  if (!ptr.down || !G) return;
-  if (G.phase === 'tear') {
-    const r = TOOL_R[upLvl('tool')], dmg = TOOL_DMG[upLvl('tool')];
-    for (const i of cellsNear(ptr.x, ptr.y, r)) if (G.cells[i].hp > 0 && G.t - G.cells[i].last >= 0.1) hitTear(i, dmg);
-  } else if (G.phase === 'under') {
-    for (const i of cellsNear(ptr.x, ptr.y, ROLL_R[upLvl('tool')])) hitUnder(i);
-  }
-}
-function stripParams() {
-  const lv = G.lv, nail = upLvl('nail'), crew = upLvl('crew');
-  return {
-    amp: 105 + 8 * lv,
-    omega: Math.max(0.85, 1.05 * G.def.speed - 0.1 * nail),
-    perfect: 9 + 3 * nail + 2 * crew - lv * 0.5,
-  };
-}
-function stripOffset() {
-  const p = stripParams();
-  return p.amp * Math.cos(p.omega * G.stripT) * G.stripDir;
-}
-function place() {
-  if (!G || G.phase !== 'shingle' || G.cool > 0) return;
-  const p = stripParams(), off = stripOffset(), err = Math.abs(off);
-  const acc = err <= p.perfect ? 1 : clamp(1 - (err - p.perfect) / 65, 0, 1);
-  const row = G.rowsDone;
-  G.rows.push({ off, acc });
-  G.rowsDone++;
-  let label, col;
-  if (acc >= 1) { label = 'PERFECT!'; col = '#7dffa8'; G.combo++; G.perfects++; G.score += 100 + 25 * (G.combo - 1); }
-  else if (err <= p.perfect + 16) { label = 'Good'; col = '#fff176'; G.combo = 0; G.score += Math.round(acc * 100); }
-  else if (err <= 45) { label = 'Sloppy'; col = '#ffb74d'; G.combo = 0; G.score += Math.round(acc * 100); G.shake = 0.15; }
-  else { label = 'Way off!'; col = '#ff8a80'; G.combo = 0; G.shake = 0.25; }
-  popup(W / 2, rowY(row) + L.rowH / 2, label + (G.combo > 1 ? ' x' + G.combo : ''), col);
-  const nx = L.roofX + (row % 2 ? 20 : L.roofW - 20);
-  chips(nx, rowY(row) + L.rowH / 2, acc >= 1 ? '#fff59d' : '#cfd8dc', 8);
-  sfx.nail(acc);
-  G.stripT = 0; G.stripDir = row % 2 ? 1 : -1; G.cool = 0.18;
-  if (G.rowsDone >= L.rows) finish(true);
-}
-function progress() {
-  if (!G) return 0;
-  const t = 1 - G.remHp / G.totalHp, u = 1 - G.remUnder / G.cells.length, s = G.rowsDone / L.rows;
-  return { t, u, s };
-}
-function finish(win) {
-  const lv = G.lv, def = G.def;
-  G.phase = win ? 'done' : 'failed'; G.doneT = 0;
-  G.win = win;
-  if (win) { sfx.win(); banner('JOB DONE!', 'Nice work, boss', 1.6); }
-  else { sfx.lose(); banner('STORM HIT!', 'The tarp is on. Try again!', 1.6); }
-}
-function showResult() {
-  const g = G, def = g.def, lv = g.lv;
-  const acc = g.rows.length ? g.rows.reduce((a, r) => a + r.acc, 0) / g.rows.length : 0;
-  const frac = Math.max(0, g.left) / g.limit;
-  let stars = 0, pay, tip = 0, bonus = 0;
-  if (g.win) {
-    stars = 1 + (acc >= 0.55) + (acc >= 0.8) + (frac >= 0.2) + (frac >= 0.4);
-    tip = g.perfects * (2 + lv);
-    pay = Math.round(def.pay * (0.6 + 0.2 * stars));
-    bonus = Math.round(g.left) * 20;
-    g.score += bonus;
-  } else {
-    const p = progress(); pay = Math.round(def.pay * 0.15 * (p.t + p.u + p.s) / 3);
-  }
-  const total = pay + tip;
-  save.money += total;
-  if (g.win) {
-    save.unlocked = Math.max(save.unlocked, Math.min(LEVELS.length, lv + 2));
-    save.stars[lv] = Math.max(save.stars[lv] || 0, stars);
-    save.best[lv] = Math.max(save.best[lv] || 0, g.score);
-  }
-  persist();
-  $('#resTitle').textContent = g.win ? 'Job Complete!' : 'Storm Hit!';
-  $('#resStars').innerHTML = g.win ? starHtml(stars, 5, true) : '<span class="off">★</span>';
-  const msgs = g.win
-    ? ['Rough, but it keeps the rain out.', 'Solid work. The customer is happy.', 'Great job! Customer left a review.', 'Fast and tidy. Very nice!', 'FIVE STARS! The neighbors want you next.'][stars - 1]
-    : 'The storm rolled in before the roof was done. You still get a little for the cleanup.';
-  const rows = g.win ? [
-    ['Accuracy', Math.round(acc * 100) + '%'], ['Perfect rows', g.perfects + ' / ' + L.rows],
-    ['Time left', Math.max(0, g.left).toFixed(1) + 's'], ['Score', g.score.toLocaleString()],
-    ['Job pay', '$' + pay], ['Tips', '$' + tip],
-  ] : [['Roof finished', Math.round((progress().t + progress().u + progress().s) / 3 * 100) + '%'], ['Cleanup pay', '$' + pay]];
-  $('#resMsg').textContent = msgs;
-  $('#resTable').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('') + `<tr class="tot"><td>Earned</td><td>+$${total}</td></tr>`;
-  const last = lv >= LEVELS.length - 1;
-  $('#btnNext').style.display = g.win && !last ? '' : 'none';
-  $('#btnRetry').textContent = g.win ? 'Replay for more stars' : 'Retry';
-  if (g.win && last) $('#resMsg').textContent += ' You have roofed every house in town!';
-  lastLv = lv;
-  setMode('result');
-}
-let lastLv = 0;
-const starHtml = (n, max, anim) => Array.from({ length: max }, (_, i) => `<span class="${i < n ? '' : 'off'}">★</span>`).join('');
-
-function updateWorkers(dt) {
-  const g = G;
-  for (const w of g.workers) {
-    w.bob += dt * 8;
-    let tx = w.hx, ty = w.hy, working = false;
-    if (g.phase === 'tear' || g.phase === 'under') {
-      const need = i => g.phase === 'tear' ? g.cells[i].hp > 0 : g.cells[i].hp <= 0 && !g.cells[i].under;
-      if (w.tgt < 0 || !need(w.tgt)) {
-        const cand = [];
-        for (let i = 0; i < g.cells.length; i++) if (need(i) && !g.workers.some(o => o !== w && o.tgt === i)) cand.push(i);
-        w.tgt = cand.length ? cand[(Math.random() * cand.length) | 0] : -1; w.work = 0;
+function jobAt(t, l) { return S.jobs.find(j => j.town === t && j.lot === l && j.status !== 'done'); }
+function drawTown(dt) {
+  T += dt;
+  cx.setTransform(sx, 0, 0, sy, 0, 0);
+  const rain = S.fx.rain > S.day, hail = S.fx.hail > S.day, stormy = rain || hail;
+  const nt = S.ups.towns;
+  for (let t = 0; t < rowsShown; t++) {
+    const y = t * RH;
+    cx.fillStyle = t % 2 ? '#74c862' : '#7ed36b'; cx.fillRect(0, y, TW, RH);
+    cx.fillStyle = '#9aa0ab'; cx.fillRect(0, y + RH - 8, TW, 6); cx.fillStyle = '#e8d36a'; for (let i = 0; i < TW; i += 24) cx.fillRect(i + 4, y + RH - 6, 10, 1.5);
+    for (let l = 0; l < 4; l++) {
+      const p = lotXY(t, l), j = t < nt ? jobAt(t, l) : null;
+      cx.fillStyle = 'rgba(255,255,255,.18)'; rrect(p.x + 3, y + 8, LW - 6, RH - 18, 6); cx.fill();
+      const seed = t * 4 + l + 1;
+      const hx = p.x + (LW - 77) / 2, hy = y + 11;
+      if (t >= nt) { // locked row: ghosted houses
+        cx.globalAlpha = 0.55; drawHouse(hx, hy, { kind: t === 3 ? 'flat' : 'house', wall: '#d8dde5', old: '#8b93a0', seed }); cx.globalAlpha = 1; continue;
       }
-      if (w.tgt >= 0) {
-        const c = cellC(w.tgt), dx = c.x - w.x, dy = c.y - w.y, d = Math.hypot(dx, dy);
-        if (d > 8) { const v = 110 * dt / d; w.x += dx * v; w.y += dy * v; }
-        else { working = true; w.work += dt; if (w.work >= 0.55) { w.work = 0; if (g.phase === 'tear') hitTear(w.tgt, 1, true); else hitUnder(w.tgt, true); } }
-        w.swing = working;
+      if (!j) {
+        const dents = hail && hash(seed) < 0.7;
+        drawHouse(hx, hy, { kind: t === 3 ? 'flat' : 'house', wall: WALLS[(seed * 7) % WALLS.length], old: dents ? '#6d6258' : ['#8a7a6a', '#7d7268', '#93826f'][seed % 3], seed, dents });
+        if (dents) { cx.fillStyle = '#ff5a36'; cx.beginPath(); cx.arc(hx + 66, hy + 4, 6, 0, 7); cx.fill(); cx.fillStyle = '#fff'; cx.font = '900 9px sans-serif'; cx.textAlign = 'center'; cx.fillText('!', hx + 66, hy + 7.4); }
+        continue;
       }
-    } else {
-      const idx = g.workers.indexOf(w);
-      const hx = L.roofX + 24 + idx * 34, hy = L.eave + 46;
-      const dx = hx - w.x, dy = hy - w.y, d = Math.hypot(dx, dy);
-      if (d > 4) { const v = 140 * dt / d; w.x += dx * v; w.y += dy * v; }
-      w.swing = g.phase === 'shingle';
+      const K = E.KINDS[j.kind], prog = j.status === 'active' ? j.progress / j.work : 0;
+      const o = { kind: j.kind, wall: WALLS[(seed * 7 + j.id) % WALLS.length], old: j.kind === 'storm' ? '#6d6258' : '#8a7a6a', neu: j.kind === 'metal' ? '#b9c7d8' : NEWROOF[j.id % NEWROOF.length], prog, seed: j.id, dents: j.kind === 'storm' && prog < 0.99 };
+      const g = drawHouse(hx, hy, o);
+      // progress bar
+      const by = y + RH - 17, bw = LW - 14;
+      cx.fillStyle = 'rgba(20,35,63,.75)'; rrect(p.x + 7, by, bw, 7, 3.5); cx.fill();
+      const late = S.day > j.due;
+      cx.fillStyle = j.status === 'sched' ? '#8d9db0' : late ? '#ff5a4d' : '#ffc22e'; if (prog > 0) { rrect(p.x + 7, by, Math.max(7, bw * prog), 7, 3.5); cx.fill(); }
+      cx.fillStyle = '#fff'; cx.font = '800 6.5px sans-serif'; cx.textAlign = 'center';
+      cx.fillText(j.status === 'sched' ? 'WAITING FOR CREW' : Math.floor(prog * 100) + '%', p.x + 7 + bw / 2, by + 5.6);
+      if (j.status === 'active') {
+        const crew = S.crews.find(c => c.id === j.crewId), working = crew && crew.outUntil <= S.day && !rain;
+        drawTruck(p.x + 4, y + 47, T);
+        if (crew) { const n = 1 + (crew.speed > 5) + (crew.speed > 8);
+          for (let i = 0; i < n; i++) { const wx = g.rx + 14 + ((i * 23 + (working ? Math.sin(T * 0.8 + i) * 10 : 0)) % 48), wy = g.flat ? g.ry - 4 : g.base - 3 - (g.rh * 0.35) * (1 - Math.abs(0.5 - (wx - g.rx) / g.rw) * 2) - 2;
+            if (working) drawWorker(wx, wy, T, i * 2); else { cx.fillStyle = 'rgba(255,255,255,.8)'; cx.font = '700 8px sans-serif'; cx.fillText('zz', wx, wy); } } }
+      } else { cx.strokeStyle = '#fff'; cx.setLineDash([3, 3]); cx.lineWidth = 1.5; rrect(p.x + 4, y + 8, LW - 8, RH - 18, 6); cx.stroke(); cx.setLineDash([]); }
+      if (S.day > j.due && j.status !== 'done') { cx.fillStyle = '#ff5a4d'; cx.beginPath(); cx.arc(p.x + LW - 10, y + 14, 6, 0, 7); cx.fill(); cx.fillStyle = '#fff'; cx.font = '900 9px sans-serif'; cx.textAlign = 'center'; cx.fillText('!', p.x + LW - 10, y + 17.2); }
+    }
+    // town label
+    const tn = E.TOWNS[t].name;
+    cx.font = '900 9px ui-rounded,sans-serif'; const tw = cx.measureText(tn).width + 10;
+    cx.fillStyle = 'rgba(20,35,63,.82)'; rrect(6, y + 2, tw, 12, 6); cx.fill(); cx.fillStyle = '#fff'; cx.textAlign = 'left'; cx.fillText(tn, 11, y + 11);
+    if (t >= nt) {
+      cx.fillStyle = 'rgba(25,45,80,.62)'; cx.fillRect(0, y, TW, RH);
+      cx.fillStyle = '#ffd23f'; rrect(TW / 2 - 8, y + 20, 16, 12, 3); cx.fill(); cx.strokeStyle = '#ffd23f'; cx.lineWidth = 2.5; cx.beginPath(); cx.arc(TW / 2, y + 20, 5, Math.PI, 0); cx.stroke();
+      cx.fillStyle = '#fff'; cx.font = '900 11px ui-rounded,sans-serif'; cx.textAlign = 'center';
+      const T_ = E.TOWNS[t]; cx.fillText(t === nt ? 'Unlock ' + T_.name + ': ' + fmtS(T_.cost) : 'Unlock previous town first', TW / 2, y + 47);
+      if (t === nt) { cx.font = '700 9px ui-rounded,sans-serif'; cx.fillStyle = '#cfe0ff'; cx.fillText('needs ' + T_.rep + ' stars' + (T_.office ? ' + ' + E.UPS.office.names[T_.office] : ''), TW / 2, y + 60); }
     }
   }
+  // weather
+  if (stormy) { cx.fillStyle = hail ? 'rgba(40,50,90,.38)' : 'rgba(60,70,90,.28)'; cx.fillRect(0, 0, TW, TH); }
+  if (rain) { cx.strokeStyle = 'rgba(200,220,255,.6)'; cx.lineWidth = 1; cx.beginPath(); for (const r of rainFx) { const yy = (r.y + T * r.v) % (TH + 20) - 10, xx = (r.x - yy * 0.2 + TW) % TW; cx.moveTo(xx, yy); cx.lineTo(xx - 2, yy + 8); } cx.stroke(); }
+  if (hail) { cx.fillStyle = '#fff'; for (let i = 0; i < 40; i++) { const r = rainFx[i], yy = (r.y + T * r.v * 1.1) % (TH + 20) - 10, xx = (r.x * 1.3 + yy * 0.1) % TW; cx.beginPath(); cx.arc(xx, yy, 2, 0, 7); cx.fill(); } }
+  // coins + floats
+  for (const c of coins) { c.t += dt; c.x += c.vx * dt; c.y += c.vy * dt; c.vy += 420 * dt; cx.globalAlpha = clamp(1.4 - c.t, 0, 1); cx.fillStyle = '#ffd23f'; cx.beginPath(); cx.arc(c.x, c.y, 3.4, 0, 7); cx.fill(); cx.strokeStyle = '#b07e00'; cx.lineWidth = 1; cx.stroke(); }
+  cx.globalAlpha = 1; coins = coins.filter(c => c.t < 1.4);
+  for (const f of floats) { f.t += dt; cx.globalAlpha = clamp(1.6 - f.t, 0, 1); cx.font = '900 14px ui-rounded,sans-serif'; cx.textAlign = 'center'; cx.lineWidth = 3.5; cx.strokeStyle = '#14233f'; cx.strokeText(f.text, f.x, f.y - f.t * 26); cx.fillStyle = f.color; cx.fillText(f.text, f.x, f.y - f.t * 26); }
+  cx.globalAlpha = 1; floats = floats.filter(f => f.t < 1.6);
+  flash = Math.max(0, flash - dt * 2); if (flash > 0) { cx.fillStyle = 'rgba(255,255,255,' + flash * 0.6 + ')'; cx.fillRect(0, 0, TW, TH); }
 }
-function update(dt) {
-  if (!G || mode !== 'play') return;
-  const g = G;
-  g.t += dt;
-  if (g.banner) { g.banner.age += dt; if (g.banner.age > g.banner.d) g.banner = null; }
-  g.shake = Math.max(0, g.shake - dt);
-  if (g.phase === 'ready') { g.ready -= dt; if (g.ready <= 0) g.phase = 'tear'; }
-  else if (g.phase === 'tear' || g.phase === 'under' || g.phase === 'shingle') {
-    g.left -= dt;
-    if (g.left <= 0) { g.left = 0; finish(false); }
-    brush(dt);
-    updateWorkers(dt);
-    if (g.phase === 'shingle') { g.stripT += dt; g.cool = Math.max(0, g.cool - dt); }
-  } else if (g.phase === 'done' || g.phase === 'failed') {
-    g.doneT += dt; if (g.doneT > 1.7) showResult();
-  }
-  for (const p of g.parts) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 520 * dt; }
-  g.parts = g.parts.filter(p => p.t < p.life);
-  for (const p of g.popups) p.t += dt;
-  g.popups = g.popups.filter(p => p.t < 1);
+function burst(t, l, text, color, n) {
+  const p = lotXY(t, l); const x = p.x + LW / 2, y = t * RH + 28;
+  floats.push({ x, y, text, color: color || '#7dffa8', t: 0 });
+  for (let i = 0; i < (n || 0); i++) coins.push({ x, y: y + 6, vx: (Math.random() - 0.5) * 130, vy: -120 - Math.random() * 90, t: 0 });
 }
+cv.addEventListener('pointerup', e => {
+  const r = cv.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * TW, y = (e.clientY - r.top) / r.height * TH;
+  const t = clamp(Math.floor(y / RH), 0, rowsShown - 1), l = clamp(Math.floor((x - 8) / LW), 0, 3);
+  if (modalOpen()) return;
+  if (t >= S.ups.towns) { setTab('office'); return; }
+  const j = jobAt(t, l);
+  if (j) openJob(j.id); else setTab('leads');
+});
 
-/* ---------- drawing ---------- */
-const hx = c => { const n = parseInt(c.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
-const mix = (a, b, t) => { const A = hx(a), B = hx(b); return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(',')})`; };
-function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
-function cloud(x, y, s, col) {
-  ctx.fillStyle = col; ctx.beginPath();
-  ctx.arc(x, y, 22 * s, 0, 7); ctx.arc(x + 24 * s, y - 10 * s, 28 * s, 0, 7); ctx.arc(x + 52 * s, y, 22 * s, 0, 7); ctx.rect(x, y, 52 * s, 22 * s);
-  ctx.fill();
+/* ---------- HUD ---------- */
+let dispCash = S.cash;
+function updateHud(dt) {
+  dispCash += (S.cash - dispCash) * Math.min(1, dt * 8); if (Math.abs(S.cash - dispCash) < 1) dispCash = S.cash;
+  const c = $('#cash'); c.textContent = fmt(dispCash); c.classList.toggle('neg', S.cash < 0);
+  $('#repfill').style.width = (S.rep / 5 * 100) + '%'; $('#repnum').textContent = S.rep.toFixed(1) + ' stars';
+  const d = E.dateOf(S.day); $('#date').textContent = d.m + ' ' + d.d + ' · Year ' + d.y;
+  const v = E.value(S), M = E.MILES; let nxt = M.findIndex(m => v < m); if (nxt < 0) nxt = M.length - 1;
+  const prev = nxt ? M[nxt - 1] : 0, pct = clamp((v - prev) / (M[nxt] - prev), 0, 1);
+  $('#vfill').style.width = (pct * 100) + '%'; $('#vtxt').textContent = 'Company ' + fmtS(v) + ' → goal ' + fmtS(M[nxt]);
+  document.querySelectorAll('#speed button').forEach(b => b.classList.toggle('on', +b.dataset.sp === speed));
+  const chips = [];
+  if (S.fx.hail > S.day) chips.push(['storm', 'HAIL STORM ' + Math.ceil(S.fx.hail - S.day) + 'd']);
+  if (S.fx.rain > S.day) chips.push(['storm', 'Rain delay ' + Math.ceil(S.fx.rain - S.day) + 'd']);
+  if (S.fx.price > S.day) chips.push(['bad', 'Materials +25% ' + Math.ceil(S.fx.price - S.day) + 'd']);
+  if (S.fx.viral > S.day) chips.push(['good', 'VIRAL x2 leads ' + Math.ceil(S.fx.viral - S.day) + 'd']);
+  if (S.fx.undercut > S.day) chips.push(['bad', 'Price war ' + Math.ceil(S.fx.undercut - S.day) + 'd']);
+  for (const id in S.camp) if (S.camp[id] > S.day) chips.push(['good', E.CAMPAIGNS[id].name + ' ' + Math.ceil(S.camp[id] - S.day) + 'd']);
+  const html = chips.map(c => `<span class="chip ${c[0]}">${c[1]}</span>`).join('');
+  if ($('#chips').dataset.h !== html) { $('#chips').dataset.h = html; $('#chips').innerHTML = html; }
 }
-function storm() { return G && G.phase !== 'ready' ? clamp(1 - G.left / G.limit, 0, 1) : (G ? 0 : 0.05); }
-let T = 0;
-function drawBg(s) {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, mix('#4aaef0', '#2b3340', s)); g.addColorStop(0.7, mix('#d6f0ff', '#6c7788', s));
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  if (s < 0.8) { ctx.globalAlpha = 1 - s * 1.25; ctx.fillStyle = '#fff3a0'; ctx.beginPath(); ctx.arc(70, 165, 34, 0, 7); ctx.fill();
-    ctx.fillStyle = 'rgba(255,243,160,.35)'; ctx.beginPath(); ctx.arc(70, 165, 52, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
-  for (const c of clouds) {
-    const x = ((c.x + T * c.v * (1 + s * 2)) % 520) - 100;
-    cloud(x, c.y - s * 30, c.s * (1 + s * 0.5), mix('#ffffff', '#4e5766', clamp(s * 1.3, 0, 1)));
+function toast(text, cls) {
+  const t = document.createElement('div'); t.className = 'toast ' + (cls || ''); t.textContent = text;
+  const box = $('#toasts'); box.appendChild(t); while (box.children.length > 3) box.removeChild(box.firstChild);
+  setTimeout(() => t.remove(), 3000);
+}
+function pulseCash() { const c = $('#cash'); c.classList.remove('pulse'); void c.offsetWidth; c.classList.add('pulse'); }
+
+/* ---------- panel rendering ---------- */
+const panel = $('#panel');
+let sig = '', scrollMem = {};
+function setTab(t) { scrollMem[tab] = panel.scrollTop; tab = t; sig = ''; render(true); panel.scrollTop = scrollMem[t] || 0; tutAfterTab(); }
+function curSig() {
+  const aff = [];
+  const push = c => aff.push(S.cash >= c ? 1 : 0);
+  Object.values(E.UPS).forEach(u => u.costs.forEach(push)); Object.values(E.CAMPAIGNS).forEach(c => push(c.cost)); E.TOWNS.forEach(t => push(t.cost)); S.candidates.forEach(c => push(c.fee)); S.crews.forEach(c => push(c.wage * 3));
+  return [tab, S.leads.map(l => l.id).join(), S.jobs.map(j => j.id + j.status + j.crewId).join(), S.crews.map(c => c.id + ':' + c.jobId + ':' + (c.outUntil > S.day ? 1 : 0)).join(), S.candidates.map(c => c.id).join(),
+    JSON.stringify(S.ups), aff.join(''), E.claimable(S), S.auto, S.autoBid, S.sound, Object.keys(S.camp).filter(k => S.camp[k] > S.day).join(), S.log.length ? S.log[0].text : '', S.recent.length, S.tut, Math.floor(S.rep * 10), S.crews.length, S.won].join('|');
+}
+function winCls(p) { return p >= 0.6 ? 'hi' : p >= 0.3 ? 'mid' : 'lo'; }
+function stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n); }
+function leadCard(L, i) {
+  const K = E.KINDS[L.kind], T_ = E.TOWNS[L.town];
+  const lockedRep = S.rep + 1e-9 < L.minRep, full = E.freeLots(S, L.town) <= 0;
+  const sg = !lockedRep && !full ? E.suggestBid(S, L) : 0, p = sg ? E.winChance(S, L, sg) : 0;
+  const tags = (L.hot ? '<span class="tag hot">HOT</span> ' : '') + (L.ins ? '<span class="tag ins">INSURANCE</span> ' : '') + (lockedRep ? `<span class="tag lock">NEEDS ${L.minRep.toFixed(1)} STARS</span>` : '');
+  return `<div class="card ${lockedRep ? 'locked' : ''}" data-lead="${L.id}" ${i === 0 ? 'id="firstLead"' : ''}>
+    <div class="t"><div class="ico" style="background:${K.color}">${{ repair: 'FIX', shingle: 'ROOF', storm: 'HAIL', metal: 'METAL', flat: 'FLAT' }[L.kind]}</div>
+    <div class="grow">${K.label} · ${L.sq} sq ${tags}<div class="s">${esc(L.cust)} · ${T_.name}</div></div></div>
+    <div class="s" style="margin-top:.4em">Market <b>${fmt(L.price)}</b> · ${L.comps.length} rival${L.comps.length > 1 ? 's' : ''} · <span data-lv="exp" data-id="${L.id}">${Math.max(0, L.exp - S.day)}d left</span></div>
+    ${lockedRep ? '' : full ? '<div class="s neg">Town lots full. Finish a job first.</div>' : `<div class="row"><button class="btn grow" data-act="bid" data-id="${L.id}">Set bid</button><button class="btn pri grow" data-act="quick" data-id="${L.id}" data-bid="${sg}">Quick bid ${fmt(sg)}<small>${Math.round(p * 100)}% to win</small></button></div>`}</div>`;
+}
+let touching = false;
+document.addEventListener('pointerdown', () => { touching = true; }, true);
+const untouch = () => setTimeout(() => { touching = false; }, 120);
+document.addEventListener('pointerup', untouch, true); document.addEventListener('pointercancel', untouch, true);
+function render(force) {
+  if (touching && !force) return;
+  const s = curSig(); if (!force && s === sig) return; sig = s;
+  const top = panel.scrollTop;
+  panel.innerHTML = ({ leads: viewLeads, jobs: viewJobs, crews: viewCrews, office: viewOffice, goals: viewGoals })[tab]();
+  panel.scrollTop = top;
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  const bl = $('#b-leads'), bj = $('#b-jobs'), bg = $('#b-goals'), bc = $('#b-crews'), bo = $('#b-office');
+  const sched = S.jobs.filter(j => j.status === 'sched').length, idle = S.crews.filter(c => !c.jobId && c.outUntil <= S.day).length;
+  const set = (el, n) => { el.textContent = n; el.classList.toggle('on', n > 0); };
+  set(bl, S.leads.filter(l => S.rep >= l.minRep).length); set(bj, sched); set(bg, E.claimable(S)); set(bc, idle); set(bo, 0);
+  tutGlow();
+}
+function viewLeads() {
+  const open = S.leads.slice().sort((a, b) => (b.tut ? 1 : 0) - (a.tut ? 1 : 0) || a.exp - b.exp);
+  const pend = S.jobs.filter(j => j.status !== 'done').length;
+  let h = `<div class="h"><b>Job Leads</b><small>${open.length}/${E.boardCap(S)} on board · ${S.crews.length} crew${S.crews.length > 1 ? 's' : ''}</small></div>`;
+  if (pend >= S.crews.length + 1) h += `<div class="hint">Heads up: you have ${pend} jobs lined up for ${S.crews.length} crew${S.crews.length > 1 ? 's' : ''}. Jobs that wait over 26 days get canceled.</div>`;
+  if (!open.length) h += '<div class="empty">No leads right now. New ones arrive every few days. Run a marketing campaign in the Office to get more!</div>';
+  return h + open.map(leadCard).join('');
+}
+function viewJobs() {
+  const act = S.jobs.filter(j => j.status === 'active'), sch = S.jobs.filter(j => j.status === 'sched');
+  let h = `<div class="switch"><span>Auto-assign crews</span><button class="btn sm ${S.auto ? 'grn' : ''}" data-act="auto">${S.auto ? 'ON' : 'OFF'}</button></div>`;
+  if (S.ups.sales >= 2) h += `<div class="sec">Auto-Bid (your sales rep)</div><div class="seg">${['Off', 'Safe', 'Smart', 'Cheap'].map((n, i) => `<button class="${S.autoBid === i ? 'on' : ''}" data-act="autobid" data-v="${i}">${n}</button>`).join('')}</div>`;
+  h += `<div class="sec">In progress (${act.length})</div>`;
+  if (!act.length) h += '<div class="empty">No crews are working. Win a bid on the Leads tab!</div>';
+  for (const j of act) h += jobCard(j);
+  if (sch.length) h += `<div class="sec">Waiting for a crew (${sch.length})</div>` + sch.map(jobCard).join('');
+  if (S.recent.length) h += `<div class="sec">Finished jobs</div>` + S.recent.map(r => `<div class="card"><div class="t"><div class="grow">${r.name} · ${esc(r.cust)}<div class="s"><span class="st" style="color:#f5b301">${stars(r.stars)}</span> ${r.late ? ' · late' : ''}</div></div><div style="text-align:right"><div class="${r.profit >= 0 ? 'pos' : 'neg'}">${r.profit >= 0 ? '+' : ''}${fmt(r.profit)}</div><div class="s">profit</div></div></div></div>`).join('');
+  h += `<div class="sec">Company log</div><div class="log">${S.log.slice(0, 14).map(l => `<div class="${l.tone}">${esc(l.text)}</div>`).join('') || '<div>Nothing yet.</div>'}</div>`;
+  return h;
+}
+function jobCard(j) {
+  const K = E.KINDS[j.kind], crew = S.crews.find(c => c.id === j.crewId), prog = j.status === 'active' ? j.progress / j.work : 0;
+  const eta = crew ? Math.max(0, Math.ceil((j.work - j.progress) / E.effSpeed(S, crew, j.kind))) : null;
+  return `<div class="card" data-job="${j.id}"><div class="t"><div class="ico" style="background:${K.color}">${j.sq}<br>sq</div><div class="grow">${K.label} · ${esc(j.cust)}<div class="s">${fmt(j.price)} · ${E.TOWNS[j.town].name} · ${crew ? esc(crew.name) : 'no crew'}</div></div></div>
+  <div class="bar" style="margin-top:.5em"><i data-lv="jp" data-id="${j.id}" style="width:${prog * 100}%"></i></div>
+  <div class="s" style="margin-top:.3em"><span data-lv="jeta" data-id="${j.id}">${j.status === 'sched' ? (j.needCash ? '<b class="neg">Needs ' + fmt(j.needCash) + ' for materials</b> · ' : '') + 'Start within ' + Math.max(0, j.startBy - S.day) + 'd' : eta + 'd to finish'}</span> · due in <span class="${S.day > j.due ? 'neg' : ''}">${j.due - S.day}d</span></div>
+  <div class="row"><button class="btn sm grow" data-act="assign" data-id="${j.id}">${j.status === 'sched' ? 'Assign crew' : 'Swap crew'}</button></div></div>`;
+}
+function crewCard(c) {
+  const job = S.jobs.find(j => j.id === c.jobId), out = c.outUntil > S.day;
+  const st = out ? `Recovering (${c.outUntil - S.day}d)` : job ? 'On job: ' + E.KINDS[job.kind].label : 'Idle';
+  const mcls = c.morale > 60 ? 'g' : c.morale > 30 ? 'y' : 'r';
+  return `<div class="card"><div class="t"><div class="ico" style="background:#ffc22e;color:#5a3a00">${{ repair: 'FIX', shingle: 'ROOF', metal: 'METAL', flat: 'FLAT' }[c.spec]}</div><div class="grow">${esc(c.name)}<div class="s">${E.SPECS[c.spec]} specialists · ${fmt(c.wage)}/day · ${st}</div></div></div>
+  <div class="stat"><span>Speed</span><div class="bar b"><i style="width:${c.speed / 10 * 100}%"></i></div><span>${c.speed.toFixed(1)}</span></div>
+  <div class="stat"><span>Quality</span><div class="bar g"><i style="width:${c.quality}%"></i></div><span>${c.quality}</span></div>
+  <div class="stat"><span>Morale</span><div class="bar ${mcls}"><i data-lv="cm" data-id="${c.id}" style="width:${c.morale}%"></i></div><span data-lv="cmn" data-id="${c.id}">${Math.round(c.morale)}</span></div>
+  <div class="row"><button class="btn sm grow" data-act="bonus" data-id="${c.id}" ${S.cash < c.wage * 3 ? 'disabled' : ''}>Bonus ${fmt(c.wage * 3)} <small>+25 morale</small></button>${S.crews.length > 1 ? `<button class="btn sm" data-act="fire" data-id="${c.id}">Let go</button>` : ''}</div></div>`;
+}
+function viewCrews() {
+  const trucksFull = S.crews.length >= S.ups.trucks, nextTruck = E.UPS.trucks.costs[S.ups.trucks - 1];
+  let h = `<div class="h"><b>Your Crews</b><small>${S.crews.length}/${S.ups.trucks} trucks · payroll ${fmt(S.crews.reduce((a, c) => a + c.wage, 0) * 7 + S.ups.sales * E.UPS.sales.salary * 7)}/week</small></div>`;
+  h += S.crews.map(crewCard).join('');
+  h += `<div class="sec">Hire a crew</div>`;
+  if (trucksFull) h += nextTruck ? `<div class="card"><div class="t"><div class="grow">Every crew needs a truck<div class="s">All ${S.ups.trucks} truck${S.ups.trucks > 1 ? 's are' : ' is'} in use.</div></div><button class="btn pri sm" id="truckBtn" data-act="buy" data-id="trucks" ${S.cash < nextTruck ? 'disabled' : ''}>Buy truck ${fmt(nextTruck)}</button></div></div>` : '<div class="hint">Your fleet is maxed out at 8 trucks.</div>';
+  h += S.candidates.map((c, i) => `<div class="card"><div class="t"><div class="ico" style="background:#6b7a95">${{ repair: 'FIX', shingle: 'ROOF', metal: 'METAL', flat: 'FLAT' }[c.spec]}</div><div class="grow">${esc(c.name)}<div class="s">${E.SPECS[c.spec]} · Speed ${c.speed.toFixed(1)} · Quality ${c.quality} · ${fmt(c.wage)}/day</div></div>
+    <button class="btn grn sm" ${i === 0 ? 'id="firstHire"' : ''} data-act="hire" data-id="${c.id}" ${trucksFull || S.cash < c.fee ? 'disabled' : ''}>Hire<small>${fmt(c.fee)}</small></button></div></div>`).join('');
+  h += `<div class="s" style="text-align:center;margin:.3em 0">New applicants show up every week. Specialists work 30% faster on their job type.</div>`;
+  return h;
+}
+function upCard(id) {
+  const u = E.UPS[id], lv = S.ups[id], have = id === 'trucks' ? lv - 1 : lv, max = u.costs.length;
+  const pips = Array.from({ length: max }, (_, i) => `<i class="${i < have ? 'on' : ''}"></i>`).join('');
+  const cost = u.costs[have];
+  let btn, note = '';
+  if (have >= max) btn = '<button class="btn sm" disabled>MAX</button>';
+  else {
+    const blockOffice = id === 'sales' && lv >= 2 * S.ups.office + 1;
+    if (blockOffice) note = `<div class="s neg">Needs a bigger office for more sales levels.</div>`;
+    btn = `<button class="btn pri sm" data-act="buy" data-id="${id}" ${S.cash < cost || blockOffice ? 'disabled' : ''}>${fmt(cost)}</button>`;
   }
-  if (s > 0.3) { // storm bank rolling in
-    const a = (s - 0.3) / 0.7;
-    const gg = ctx.createLinearGradient(0, 0, 0, 80 + a * 260);
-    gg.addColorStop(0, `rgba(25,30,42,${0.55 + a * 0.4})`); gg.addColorStop(1, 'rgba(25,30,42,0)');
-    ctx.fillStyle = gg; ctx.fillRect(0, 0, W, 80 + a * 260);
-  }
-  // hills + ground
-  ctx.fillStyle = mix('#7ed36b', '#2e5a38', s); ctx.beginPath(); ctx.ellipse(70, H - 150, 230, 90, 0, Math.PI, 0); ctx.fill();
-  ctx.fillStyle = mix('#5fbf5a', '#25492f', s); ctx.beginPath(); ctx.ellipse(340, H - 140, 220, 70, 0, Math.PI, 0); ctx.fill();
-  ctx.fillStyle = mix('#58b552', '#20402a', s); ctx.fillRect(0, L.eave + 78, W, H);
-  ctx.fillStyle = mix('#b79f78', '#4c4538', s); ctx.fillRect(0, L.eave + 78, W, 10);
+  const now = id === 'office' ? E.UPS.office.names[lv] + (lv < 3 ? ' → ' + E.UPS.office.names[lv + 1] : '') : id === 'trucks' ? lv + ' truck' + (lv > 1 ? 's' : '') : 'Level ' + have + '/' + max;
+  return `<div class="card"><div class="t"><div class="grow">${u.name}<span class="pips">${pips}</span><div class="s">${now}<br>${u.desc}</div>${note}</div>${btn}</div></div>`;
 }
-function tree(x, s) {
-  ctx.fillStyle = mix('#6d4c41', '#2f2420', s); ctx.fillRect(x - 5, L.eave + 40, 10, 40);
-  ctx.fillStyle = mix('#3fa65a', '#1d4026', s); ctx.beginPath(); ctx.arc(x, L.eave + 28, 26, 0, 7); ctx.arc(x - 14, L.eave + 44, 18, 0, 7); ctx.arc(x + 14, L.eave + 44, 18, 0, 7); ctx.fill();
+function viewOffice() {
+  let h = `<div class="h"><b>Company</b><small>Value ${fmtS(E.value(S))}</small></div><div class="sec">Fleet & gear</div>` + ['trucks', 'tools', 'dump', 'safety', 'train'].map(upCard).join('');
+  h += `<div class="sec">Sales & office</div>` + ['sales', 'office'].map(upCard).join('');
+  h += `<div class="sec">Marketing campaigns</div>` + Object.entries(E.CAMPAIGNS).map(([id, c]) => {
+    const on = S.camp[id] > S.day;
+    return `<div class="card"><div class="t"><div class="grow">${c.name}<div class="s">${Math.round(c.boost * 100)}% more leads for ${c.days} days${c.rep ? ', +' + c.rep + ' stars' : ''}. Instant: 2 new leads.${on ? '<br><b>Running: ' + Math.ceil(S.camp[id] - S.day) + ' days left</b>' : ''}</div></div>
+    <button class="btn sm ${on ? '' : 'pri'}" data-act="camp" data-id="${id}" ${on || S.cash < c.cost ? 'disabled' : ''}>${on ? 'Active' : fmt(c.cost)}</button></div></div>`;
+  }).join('');
+  h += `<div class="sec">Expand to new towns</div>` + E.TOWNS.slice(1).map((T_, k) => {
+    const i = k + 1, open = S.ups.towns > i, chk = E.townCheck(S, i);
+    const need = `${fmt(T_.cost)} · ${T_.rep} stars${T_.office ? ' · ' + E.UPS.office.names[T_.office] : ''}`;
+    const why = chk === 'locked' ? 'Open the previous town first' : chk === 'rep' ? 'Needs ' + T_.rep + ' stars (you have ' + S.rep.toFixed(1) + ')' : chk === 'office' ? 'Needs ' + E.UPS.office.names[T_.office] : chk === 'cash' ? 'Save up ' + fmt(T_.cost) : '';
+    return `<div class="card ${open ? '' : chk === 'locked' ? 'locked' : ''}"><div class="t"><div class="grow">${T_.name} ${open ? '<span class="tag ins">OPEN</span>' : ''}<div class="s">${i === 3 ? 'Big commercial flat-roof contracts.' : 'Pricier jobs, bigger roofs.'} Jobs pay ${Math.round(T_.mult * 100)}% of base.<br>${open ? 'You work here now.' : need}</div>${!open && why ? `<div class="s neg">${why}</div>` : ''}</div>
+    ${open ? '' : `<button class="btn pri sm" data-act="town" data-id="${i}" ${chk ? 'disabled' : ''}>Open</button>`}</div></div>`;
+  }).join('');
+  return h;
 }
-function drawHouse(def, s) {
-  tree(26, s); tree(W - 26, s);
-  const wx = L.roofX + 8, ww = L.roofW - 16, wy = L.eave + 6;
-  ctx.fillStyle = mix(def.wall, '#59606e', s * 0.7); ctx.fillRect(wx, wy, ww, 74);
-  ctx.strokeStyle = 'rgba(0,0,0,.08)'; ctx.lineWidth = 1; for (let y = wy + 9; y < wy + 74; y += 9) { ctx.beginPath(); ctx.moveTo(wx, y); ctx.lineTo(wx + ww, y); ctx.stroke(); }
-  const lit = s > 0.5;
-  ctx.fillStyle = lit ? '#ffe08a' : '#8fd0f5'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
-  for (const fx of [wx + ww * 0.15, wx + ww * 0.65]) { ctx.fillRect(fx, wy + 14, ww * 0.2, 28); ctx.strokeRect(fx, wy + 14, ww * 0.2, 28); }
-  ctx.fillStyle = '#b5483a'; rr(wx + ww * 0.42, wy + 22, ww * 0.16, 52, 5); ctx.fill();
-  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(wx + ww * 0.55, wy + 50, 2.5, 0, 7); ctx.fill();
+function viewGoals() {
+  const v = E.value(S);
+  let h = `<div class="h"><b>Road to $1,000,000</b><small>${fmtS(v)}</small></div><div class="bar y" style="height:1em"><i style="width:${clamp(v / 1e6 * 100, 0, 100)}%"></i></div>
+    <div class="s" style="margin:.3em 0 .6em">Company value = cash + 60% of what you invested in gear + about two months of profit.${S.won ? ' <b>You built a roofing empire!</b> Keep going for $10M.' : ''}</div><div class="ms">`;
+  E.MILES.forEach((m, i) => { const st = S.miles[i]; h += st === 1 ? `<span class="rdy" data-act="claimm" data-id="${i}">${fmtS(m)} CLAIM +${fmt(E.milestoneReward(i))}</span>` : `<span class="${st === 2 ? 'ok' : ''}">${fmtS(m)}${st === 2 ? ' ✓' : ''}</span>`; });
+  h += `</div><div class="sec">Goals</div>` + E.GOALS.map(g => {
+    const st = S.goals[g.id];
+    return `<div class="card ${st ? '' : 'locked'}"><div class="t"><div class="grow">${g.name}<div class="s">Reward ${fmt(g.reward)}</div></div>${st === 1 ? `<button class="btn gold sm" data-act="claimg" data-id="${g.id}">Claim ${fmt(g.reward)}</button>` : st === 2 ? '<span class="pos">Done ✓</span>' : '<span class="s">In progress</span>'}</div></div>`;
+  }).join('');
+  h += `<div class="sec">Stats & settings</div><div class="card"><div class="kv"><span>Jobs finished</span><span>${S.stats.jobsDone}</span><span>Bids won / placed</span><span>${S.stats.wins} / ${S.stats.bids}</span><span>Total earned</span><span>${fmt(S.stats.earned)}</span><span>Best job</span><span>${fmt(S.stats.bestJob)}</span><span>Storms survived</span><span>${S.stats.hails}</span></div></div>
+   <div class="switch"><span>Sound</span><button class="btn sm ${S.sound ? 'grn' : ''}" data-act="sound">${S.sound ? 'ON' : 'OFF'}</button></div>
+   <div class="switch"><span>Replay tutorial</span><button class="btn sm" data-act="retut">Replay</button></div>
+   <div class="switch"><span>Start over</span><button class="btn sm" data-act="reset">Reset</button></div>
+   <div class="s" style="text-align:center;margin-top:.6em">Roof Rush is a free game by <a href="https://itscloudy96.github.io/game-dev-kits/" target="_blank" rel="noopener">Cloudy</a>.</div>`;
+  return h;
 }
-function drawOldCell(c, x, y, w, h) {
-  const pal = ['#8d6e63', '#7d6b60', '#6f5f55', '#9a8374'];
-  ctx.fillStyle = pal[(c.seed * 4) | 0]; ctx.fillRect(x, y, w, h);
-  const dmg = c.hp < c.max;
-  ctx.strokeStyle = 'rgba(40,25,15,.35)'; ctx.lineWidth = 1.5;
-  const half = h / 2;
-  for (let k = 0; k < 2; k++) {
-    const yy = y + k * half, off = k ? w / 4 : 0;
-    ctx.beginPath(); ctx.moveTo(x, yy + half); ctx.lineTo(x + w, yy + half); ctx.stroke();
-    for (let xx = x + off; xx < x + w; xx += w / 2) { ctx.beginPath(); ctx.moveTo(xx, yy + half * 0.45); ctx.lineTo(xx, yy + half); ctx.stroke(); }
-  }
-  if (c.max > 1) { ctx.fillStyle = 'rgba(76,140,60,.55)'; ctx.beginPath(); ctx.arc(x + w * 0.3, y + h * 0.35, Math.min(w, h) * 0.2, 0, 7); ctx.arc(x + w * 0.7, y + h * 0.62, Math.min(w, h) * 0.16, 0, 7); ctx.fill(); }
-  if (dmg) { ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x + w * 0.2, y + h * 0.2); ctx.lineTo(x + w * 0.45, y + h * 0.5); ctx.lineTo(x + w * 0.38, y + h * 0.8); ctx.stroke(); }
-  if (c.max > 1) { ctx.fillStyle = '#fff'; ctx.strokeStyle = '#3b2a20'; ctx.lineWidth = 1;
-    for (let i = 0; i < c.hp; i++) { ctx.beginPath(); ctx.arc(x + w / 2 + (i - (c.hp - 1) / 2) * 9, y + h - 8, 3.2, 0, 7); ctx.fill(); ctx.stroke(); } }
-}
-function drawStrip(x, y, w, h, col, rowIdx, shadow) {
-  if (shadow) { ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.fillRect(x + 4, y + 6, w, h); }
-  ctx.fillStyle = col; ctx.fillRect(x, y, w, h);
-  const g = ctx.createLinearGradient(0, y, 0, y + h);
-  g.addColorStop(0, 'rgba(0,0,0,.28)'); g.addColorStop(0.5, 'rgba(0,0,0,.05)'); g.addColorStop(1, 'rgba(255,255,255,.18)');
-  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.5;
-  const stag = (rowIdx % 2) * L.cellW / 2;
-  for (let xx = x + stag; xx < x + w + 1; xx += L.cellW) { ctx.beginPath(); ctx.moveTo(xx, y + h * 0.5); ctx.lineTo(xx, y + h); ctx.stroke(); }
-  ctx.beginPath(); ctx.moveTo(x, y + h * 0.5); ctx.lineTo(x + w, y + h * 0.5); ctx.stroke();
-  ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.strokeRect(x, y, w, h);
-}
-function drawRoof(g, s) {
-  const def = g.def;
-  // chimney
-  ctx.fillStyle = '#a5503f'; ctx.fillRect(L.roofX + L.roofW * 0.68, L.roofTop - 34, 34, 70);
-  ctx.fillStyle = '#7d3a2d'; ctx.fillRect(L.roofX + L.roofW * 0.68 - 4, L.roofTop - 42, 42, 10);
-  // plane base
-  ctx.fillStyle = '#d9b382'; ctx.fillRect(L.roofX, L.roofTop, L.roofW, L.roofH);
-  for (let i = 0; i < g.cells.length; i++) {
-    const c = g.cells[i], x = L.roofX + (i % L.cols) * L.cellW, y = rowY(Math.floor(i / L.cols));
-    if (c.hp > 0) drawOldCell(c, x, y, L.cellW, L.rowH);
-    else if (c.under) {
-      ctx.fillStyle = '#3b4560'; ctx.fillRect(x, y, L.cellW, L.rowH);
-      ctx.fillStyle = 'rgba(255,255,255,.07)'; ctx.beginPath(); ctx.moveTo(x, y + L.rowH); ctx.lineTo(x + L.cellW * 0.5, y); ctx.lineTo(x + L.cellW * 0.8, y); ctx.lineTo(x + L.cellW * 0.3, y + L.rowH); ctx.fill();
-      ctx.fillStyle = '#e8edf8'; for (const [a, b] of [[4, 4], [L.cellW - 4, 4], [4, L.rowH - 4], [L.cellW - 4, L.rowH - 4]]) { ctx.beginPath(); ctx.arc(x + a, y + b, 1.6, 0, 7); ctx.fill(); }
-    } else {
-      ctx.fillStyle = (Math.floor(i / L.cols) + i) % 2 ? '#d9b382' : '#cfa874'; ctx.fillRect(x, y, L.cellW, L.rowH);
-      ctx.strokeStyle = 'rgba(120,80,40,.25)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, y + L.rowH / 2); ctx.lineTo(x + L.cellW, y + L.rowH / 2); ctx.stroke();
-      ctx.fillStyle = '#8a6a44'; ctx.beginPath(); ctx.arc(x + L.cellW * 0.25, y + L.rowH * 0.3, 1.5, 0, 7); ctx.arc(x + L.cellW * 0.75, y + L.rowH * 0.7, 1.5, 0, 7); ctx.fill();
-    }
-  }
-  // chalk guide + placed rows (clipped to roof)
-  ctx.save(); ctx.beginPath(); ctx.rect(L.roofX, L.roofTop, L.roofW, L.roofH); ctx.clip();
-  g.rows.forEach((r, i) => {
-    const y = rowY(i);
-    drawStrip(L.roofX + r.off, y, L.roofW, L.rowH + 3, def.shingle, i, false);
-    if (Math.abs(r.off) > 6) { // exposed gap warning
-      ctx.fillStyle = 'rgba(255,60,60,.28)';
-      if (r.off > 0) ctx.fillRect(L.roofX, y, r.off, L.rowH + 3); else ctx.fillRect(L.roofX + L.roofW + r.off, y, -r.off, L.rowH + 3);
-    }
+function updateLive() {
+  document.querySelectorAll('[data-lv]').forEach(el => {
+    const id = +el.dataset.id, k = el.dataset.lv;
+    if (k === 'exp') { const L = S.leads.find(l => l.id === id); if (L) el.textContent = Math.max(0, L.exp - S.day) + 'd left'; }
+    else if (k === 'jp' || k === 'jeta') {
+      const j = S.jobs.find(j => j.id === id); if (!j) return;
+      if (k === 'jp') el.style.width = (j.status === 'active' ? j.progress / j.work * 100 : 0) + '%';
+      else { const c = S.crews.find(c => c.id === j.crewId); el.textContent = j.status === 'sched' ? 'Start within ' + Math.max(0, j.startBy - S.day) + 'd' : c ? Math.max(0, Math.ceil((j.work - j.progress) / E.effSpeed(S, c, j.kind))) + 'd to finish' : 'No crew'; }
+    } else if (k === 'cm' || k === 'cmn') { const c = S.crews.find(c => c.id === id); if (c) { if (k === 'cm') el.style.width = c.morale + '%'; else el.textContent = Math.round(c.morale); } }
   });
-  ctx.restore();
-  // ridge + eave + rakes
-  ctx.fillStyle = '#2d3550'; rr(L.roofX - 6, L.roofTop - 12, L.roofW + 12, 14, 6); ctx.fill();
-  ctx.fillStyle = '#f1f1f1'; ctx.fillRect(L.roofX - 8, L.eave, L.roofW + 16, 7);
-  ctx.fillStyle = '#e0e0e0'; ctx.fillRect(L.roofX - 5, L.roofTop - 2, 5, L.roofH + 2); ctx.fillRect(L.roofX + L.roofW, L.roofTop - 2, 5, L.roofH + 2);
-  // shingle slider
-  if (g.phase === 'shingle' && g.rowsDone < L.rows) {
-    const y = rowY(g.rowsDone);
-    const pulse = 0.5 + 0.5 * Math.sin(T * 6);
-    ctx.save(); ctx.setLineDash([9, 6]); ctx.lineWidth = 3; ctx.strokeStyle = `rgba(255,255,255,${0.7 + 0.3 * pulse})`;
-    ctx.strokeRect(L.roofX, y, L.roofW, L.rowH); ctx.restore();
-    ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(L.roofX, y, L.roofW, L.rowH);
-    const off = stripOffset();
-    drawStrip(L.roofX + off, y - 3, L.roofW, L.rowH, def.shingle, g.rowsDone, true);
-    // offset hint
-    const p = stripParams();
-    if (Math.abs(off) <= p.perfect) { ctx.strokeStyle = '#7dffa8'; ctx.lineWidth = 4; ctx.strokeRect(L.roofX + off, y - 3, L.roofW, L.rowH); }
-  }
-}
-function drawWorker(w, g) {
-  const x = w.x, y = w.y + Math.sin(w.bob) * 1.5;
-  ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(x, y + 12, 9, 3, 0, 0, 7); ctx.fill();
-  ctx.fillStyle = '#2f6fdb'; rr(x - 6, y - 2, 12, 14, 4); ctx.fill();
-  ctx.fillStyle = '#ffcfa0'; ctx.beginPath(); ctx.arc(x, y - 7, 6, 0, 7); ctx.fill();
-  ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(x, y - 9, 6.5, Math.PI, 0); ctx.fill(); ctx.fillRect(x - 8, y - 9, 16, 2.5);
-  ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = 2.5; ctx.beginPath();
-  const sw = w.swing ? Math.sin(T * 18 + w.bob) * 6 : 0;
-  ctx.moveTo(x + 5, y + 2); ctx.lineTo(x + 12, y - 4 + sw); ctx.stroke();
-  ctx.fillStyle = '#888'; ctx.fillRect(x + 10, y - 7 + sw, 6, 3);
-}
-function drawWeather(s) {
-  if (s > 0.55) {
-    const a = clamp((s - 0.55) / 0.45, 0, 1);
-    ctx.strokeStyle = `rgba(190,215,255,${0.25 + 0.4 * a})`; ctx.lineWidth = 1.5; ctx.beginPath();
-    const n = Math.floor(rain.length * a);
-    for (let i = 0; i < n; i++) { const r = rain[i]; const y = (r.y + T * r.v) % (H + 40) - 20; const x = (r.x - y * 0.18 + 400) % 400; ctx.moveTo(x, y); ctx.lineTo(x - 3, y + 12); }
-    ctx.stroke();
-  }
-  if (s > 0.85 && G && (G.phase !== 'done')) { if (Math.random() < 0.012) flash = 0.7; }
-  if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash * 0.6})`; ctx.fillRect(0, 0, W, H); }
-  if (s > 0.2) { ctx.fillStyle = `rgba(10,15,30,${(s - 0.2) * 0.28})`; ctx.fillRect(0, 0, W, H); }
-}
-const HINT = { tear: 'Swipe or tap the old shingles to rip them off!', under: 'Swipe over the bare deck to roll out the felt', shingle: 'TAP when the shingles line up with the chalk line!' };
-function drawHud(g) {
-  // top bar
-  ctx.fillStyle = 'rgba(20,28,48,.72)'; ctx.fillRect(0, 0, W, 104);
-  ctx.fillStyle = '#fff'; ctx.font = '800 17px ui-rounded,"Trebuchet MS",system-ui,sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-  ctx.fillText(g.def.name, 14, 20);
-  ctx.textAlign = 'center'; ctx.fillStyle = '#ffd23f'; ctx.fillText('Score ' + g.score, W / 2 + 20, 20);
-  // pause button
-  ctx.fillStyle = '#fff'; rr(W - 44, 7, 32, 28, 8); ctx.fill(); ctx.fillStyle = '#1d2a44'; ctx.fillRect(W - 35, 14, 5, 14); ctx.fillRect(W - 26, 14, 5, 14);
-  // timer bar
-  const frac = clamp(g.left / g.limit, 0, 1);
-  ctx.fillStyle = 'rgba(255,255,255,.25)'; rr(14, 44, W - 28, 18, 9); ctx.fill();
-  ctx.fillStyle = frac > 0.4 ? '#4cd964' : frac > 0.2 ? '#ffb02e' : '#ff4d4d';
-  if (frac > 0.01) { rr(14, 44, Math.max(18, (W - 28) * frac), 18, 9); ctx.fill(); }
-  ctx.fillStyle = '#fff'; ctx.font = '800 12px ui-rounded,system-ui,sans-serif'; ctx.textAlign = 'center';
-  ctx.fillText(frac > 0.2 ? 'Storm in ' + Math.ceil(g.left) + 's' : 'STORM COMING! ' + Math.ceil(g.left) + 's', W / 2, 53.5);
-  // phase chips
-  const pr = progress(), names = ['1 Tear Off', '2 Underlay', '3 Shingles'], vals = [pr.t, pr.u, pr.s], keys = ['tear', 'under', 'shingle'];
-  const cw = (W - 28 - 12) / 3;
-  for (let i = 0; i < 3; i++) {
-    const x = 14 + i * (cw + 6), cur = g.phase === keys[i], done = vals[i] >= 1;
-    ctx.fillStyle = cur ? 'rgba(255,138,61,.35)' : 'rgba(255,255,255,.14)'; rr(x, 70, cw, 24, 8); ctx.fill();
-    if (vals[i] > 0) { ctx.fillStyle = done ? '#4cd964' : '#ff8a3d'; rr(x, 70, Math.max(12, cw * vals[i]), 24, 8); ctx.fill(); }
-    ctx.strokeStyle = cur ? '#fff' : 'rgba(255,255,255,.3)'; ctx.lineWidth = cur ? 2 : 1; rr(x, 70, cw, 24, 8); ctx.stroke();
-    ctx.fillStyle = '#fff'; ctx.font = '800 12px ui-rounded,system-ui,sans-serif'; ctx.fillText((done ? '✓ ' : '') + names[i], x + cw / 2, 82.5);
-  }
-  // bottom hint
-  const hint = HINT[g.phase];
-  if (hint) {
-    ctx.fillStyle = 'rgba(20,28,48,.72)'; rr(14, H - 64, W - 28, 44, 14); ctx.fill();
-    ctx.fillStyle = '#fff'; ctx.font = '800 14px ui-rounded,system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.fillText(hint, W / 2, H - 42);
-  }
-  if (g.combo > 1 && g.phase === 'shingle') { ctx.fillStyle = '#7dffa8'; ctx.font = '900 16px ui-rounded,system-ui,sans-serif'; ctx.fillText('Combo x' + g.combo, W / 2, 118); }
-  // banner
-  if (g.banner) {
-    const b = g.banner, a = clamp(Math.min(b.age / 0.2, (b.d - b.age) / 0.25), 0, 1);
-    ctx.globalAlpha = a; ctx.fillStyle = 'rgba(20,28,48,.85)'; rr(20, H / 2 - 52, W - 40, 100, 20); ctx.fill();
-    ctx.strokeStyle = '#ff8a3d'; ctx.lineWidth = 4; rr(20, H / 2 - 52, W - 40, 100, 20); ctx.stroke();
-    ctx.fillStyle = '#fff'; ctx.font = '900 26px ui-rounded,"Trebuchet MS",system-ui,sans-serif'; ctx.fillText(b.t, W / 2, H / 2 - 14);
-    ctx.fillStyle = '#ffe08a'; ctx.font = '700 15px ui-rounded,system-ui,sans-serif'; ctx.fillText(b.sub, W / 2, H / 2 + 22);
-    ctx.globalAlpha = 1;
-  }
-}
-function drawBrush() {
-  if (!ptr.down || !G) return;
-  if (G.phase === 'tear') { ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ptr.x, ptr.y, TOOL_R[upLvl('tool')], 0, 7); ctx.stroke();
-    ctx.fillStyle = '#c9ced6'; ctx.save(); ctx.translate(ptr.x, ptr.y); ctx.rotate(-0.6); ctx.fillRect(-3, -34, 6, 34); ctx.fillStyle = '#e53935'; ctx.fillRect(-3, -34, 6, 10); ctx.restore(); }
-  else if (G.phase === 'under') { ctx.strokeStyle = 'rgba(160,190,255,.95)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ptr.x, ptr.y, ROLL_R[upLvl('tool')], 0, 7); ctx.stroke(); }
-}
-function render(dt) {
-  T += dt; flash = Math.max(0, flash - dt * 2.5);
-  ctx.setTransform(sx, 0, 0, sy, 0, 0);
-  const g = G || MENU;
-  const s = G ? storm() : 0.05;
-  ctx.save();
-  if (G && G.shake > 0) ctx.translate(rnd(-4, 4), rnd(-4, 4));
-  drawBg(s);
-  drawHouse(g.def, s);
-  drawRoof(g, s);
-  if (G) for (const w of G.workers) drawWorker(w, G);
-  if (G) {
-    for (const p of G.parts) { ctx.globalAlpha = 1 - p.t / p.life; ctx.fillStyle = p.col; ctx.fillRect(p.x, p.y, p.s, p.s); }
-    ctx.globalAlpha = 1;
-    drawBrush();
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (const p of G.popups) { ctx.globalAlpha = 1 - p.t; ctx.font = '900 24px ui-rounded,"Trebuchet MS",system-ui,sans-serif'; ctx.lineWidth = 5; ctx.strokeStyle = '#1d2a44'; ctx.strokeText(p.text, p.x, p.y - p.t * 40); ctx.fillStyle = p.color; ctx.fillText(p.text, p.x, p.y - p.t * 40); }
-    ctx.globalAlpha = 1;
-  }
-  drawWeather(s);
-  ctx.restore();
-  ctx.setTransform(sx, 0, 0, sy, 0, 0);
-  if (G && (mode === 'play' || mode === 'paused' || mode === 'result')) drawHud(G);
 }
 
-/* ---------- input ---------- */
-function toLogical(e) { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
-canvas.addEventListener('pointerdown', e => {
+/* ---------- modals ---------- */
+const modal = $('#modal');
+const modalOpen = () => !modal.classList.contains('hidden');
+function openModal(html, center) { modal.className = center ? 'center' : ''; modal.innerHTML = `<div class="sheet">${html}</div>`; modal.classList.remove('hidden'); tutGlow(); }
+function closeModal() { modal.classList.add('hidden'); modal.innerHTML = ''; bid = null; sig = ''; render(true); tutAfterModal(); }
+function openBid(id) {
+  const L = S.leads.find(l => l.id === id); if (!L) return;
+  if (S.tut === 1) tutSet(2);
+  const sg = E.suggestBid(S, L); bid = { id, ratio: Math.round(sg / L.price * 100), sg };
+  const K = E.KINDS[L.kind], ce = E.costEstimate(S, L);
+  openModal(`<h2>${K.label} · ${L.sq} sq</h2><div class="s" style="margin-top:-.2em">${esc(L.cust)} · ${E.TOWNS[L.town].name} · ${K.matName}</div>
+  <div class="kv"><span>Market price</span><span>${fmt(L.price)}</span><span>Your cost (materials + crew time)</span><span>~${fmt(ce.total)}</span><span>Best crew</span><span>${ce.crew ? esc(ce.crew.name) + ' · ~' + Math.ceil(ce.days) + ' days' : 'none'}</span></div>
+  <div class="rivals">Rivals: ${L.comps.map(c => esc(c.n) + ' (~' + fmt(c.mu * L.price) + ')').join(', ')}. Customer walks away over ${fmt(L.price * 1.28)}.</div>
+  <div class="bidnum" id="bidnum"></div><input type="range" class="slider" id="bidslider" min="55" max="150" step="1" value="${bid.ratio}">
+  <div style="display:flex;justify-content:space-between;font-size:.72em;font-weight:800;color:#6a7b9c"><span>cheap = wins more</span><span>pricey = more profit</span></div>
+  <div class="kv"><span>Chance to win</span><span id="bidp"></span></div><div class="meter"><i id="bidmeter"></i></div>
+  <div class="kv"><span>Profit if you win</span><span id="bidprofit"></span></div>
+  ${S.tut === 2 ? '<div class="hint" style="margin-top:.5em">' + TUT[2].hint + '</div>' : ''}
+  <div class="btns"><button class="btn gold" id="btnSuggest" data-act="suggest">Suggest a smart price</button><button class="btn pri" id="btnSubmit" data-act="submit">Submit bid</button><button class="btn" data-act="close">Cancel</button></div>`);
+  updateBid();
+}
+function updateBid() {
+  const L = S.leads.find(l => l.id === bid.id); if (!L) return;
+  const price = Math.round(L.price * bid.ratio / 100 / 10) * 10, p = E.winChance(S, L, price), cost = E.costEstimate(S, L).total, profit = price - cost;
+  $('#bidnum').textContent = fmt(price) + ' (' + bid.ratio + '%)';
+  const pe = $('#bidp'); pe.textContent = Math.round(p * 100) + '%'; pe.className = 'win ' + winCls(p);
+  const m = $('#bidmeter'); m.style.width = (p * 100) + '%'; m.style.background = p >= 0.6 ? '#2fbf71' : p >= 0.3 ? '#ffc22e' : '#ff5a4d';
+  const pr = $('#bidprofit'); pr.textContent = (profit >= 0 ? '+' : '') + fmt(profit) + (profit < 0 ? ' (LOSS!)' : ''); pr.className = profit >= 0 ? 'pos' : 'neg';
+  bid.price = price;
+}
+function submitBidUI(id, price) {
+  const L = S.leads.find(l => l.id === id); if (!L) { closeModal(); return; }
+  openModal(`<div class="result"><div class="big dots">Customer is reviewing bids</div><div class="s">${esc(L.cust)} is comparing ${L.comps.length + 1} quotes</div></div>`, true);
+  setTimeout(() => {
+    const r = E.submitBid(S, id, price);
+    if (r.err) { openModal(`<h2 class="bad">Can't bid</h2><p>${r.err === 'lots' ? 'All the lots in that town are busy.' : r.err === 'rep' ? 'You need a higher reputation for that job.' : 'That lead is gone.'}</p><div class="btns"><button class="btn" data-act="close">OK</button></div>`, true); return; }
+    if (r.win) {
+      snd.win(); buzz(30);
+      openModal(`<div class="result"><h2 class="good">YOU WON THE BID!</h2><div class="big pos">${fmt(r.bid)}</div><p>${esc(r.lead.cust)} chose you${r.p < 0.5 ? ' against the odds' : ''}. Deposit received: <b class="pos">+${fmt(r.deposit)}</b>. ${S.auto ? 'A crew will start right away.' : 'Assign a crew in the Jobs tab.'}</p><div class="btns"><button class="btn pri" data-act="close">Let\'s roof it!</button></div></div>`, true);
+    } else {
+      snd.lose();
+      openModal(`<div class="result"><h2 class="bad">Lost the bid</h2><p>${esc(r.winner)} won it at ${fmt(r.winPrice)}. You bid ${fmt(r.bid)}.<br>${r.bid > r.winPrice ? 'Try pricing a bit lower next time.' : 'They just got lucky. Plenty more leads!'}</p><div class="btns"><button class="btn" data-act="close">Next lead</button></div></div>`, true);
+    }
+  }, 1100);
+}
+function openJob(id) {
+  const j = S.jobs.find(j => j.id === id); if (!j) return;
+  const K = E.KINDS[j.kind], crew = S.crews.find(c => c.id === j.crewId), prog = j.status === 'active' ? j.progress / j.work : 0;
+  const est = j.price - Math.round(j.matBase * E.matMult(S)) - (crew ? j.work / E.effSpeed(S, crew, j.kind) * crew.wage : 0);
+  openModal(`<h2>${K.label} · ${j.sq} sq</h2><div class="s">${esc(j.cust)} · ${E.TOWNS[j.town].name}</div><div class="bar" style="margin:.6em 0"><i style="width:${prog * 100}%"></i></div>
+  <div class="kv"><span>Price</span><span>${fmt(j.price)}</span><span>Crew</span><span>${crew ? esc(crew.name) : 'none yet'}</span><span>Due in</span><span class="${S.day > j.due ? 'neg' : ''}">${j.due - S.day} days</span><span>Est. profit</span><span class="${est >= 0 ? 'pos' : 'neg'}">${fmt(est)}</span></div>
+  <div class="btns"><button class="btn pri" data-act="assign" data-id="${j.id}">${j.status === 'sched' ? 'Assign a crew' : 'Swap crew'}</button><button class="btn" data-act="close">Close</button></div>`);
+}
+function openAssign(id) {
+  const j = S.jobs.find(j => j.id === id); if (!j) return;
+  const crews = S.crews.filter(c => !c.jobId && c.outUntil <= S.day);
+  openModal(`<h2>Pick a crew</h2><div class="s">${E.KINDS[j.kind].label} · ${j.sq} sq. Specialists work 30% faster.</div>` + (crews.length ? crews.map(c => {
+    const sp = E.effSpeed(S, c, j.kind), d = Math.ceil((j.work - j.progress) / sp);
+    return `<div class="card"><div class="t"><div class="grow">${esc(c.name)}<div class="s">${E.SPECS[c.spec]}${c.spec === E.KINDS[j.kind].spec ? ' (match!)' : ''} · morale ${Math.round(c.morale)} · ~${d} days</div></div><button class="btn pri sm" data-act="doassign" data-id="${j.id}" data-crew="${c.id}">Send</button></div></div>`;
+  }).join('') : '<div class="empty">No idle crews. Finish a job or hire another crew.</div>') + `<div class="btns"><button class="btn" data-act="close">Cancel</button></div>`);
+}
+function openEvent() {
+  const ev = S.pending[0]; if (!ev) return;
+  const v = E.eventView(S, ev); snd.alert(); buzz([40, 40, 40]);
+  openModal(`<h2 class="${v.tone}">${esc(v.title)}</h2><p>${esc(v.text)}</p><div class="btns">${v.choices.map((c, i) => `<button class="btn ${i === 0 ? 'pri' : ''}" data-act="evchoice" data-i="${i}">${esc(c.label)}${c.sub ? '<small>' + esc(c.sub) + '</small>' : ''}</button>`).join('')}</div>`, true);
+}
+
+/* ---------- tutorial ---------- */
+const coach = $('#coach');
+const TUT = [
+  { txt: '<b>Welcome to Roof Rush!</b> You run a tiny roofing company. <b>Win bids</b> from customers, let your <b>crews</b> do the work, get paid, and grow your empire to <b>$1,000,000</b>.', btn: "Let's go" },
+  { txt: 'Time is paused while you learn. Tap the <b>glowing lead</b> to see the job and your rivals.', glow: '#firstLead' },
+  { txt: '', hint: '<b>Set your price.</b> Cheap wins more often but earns less. Expensive earns more but loses the bid. Tap <b>Suggest</b>, then <b>Submit bid</b>.', glow: '#btnSuggest' },
+  { txt: 'You won! Your crew starts automatically. Watch the <b>progress bar</b> fill on the town map above. Time is running now.', btn: 'Got it', run: true },
+  { txt: '', wait: true, run: true },
+  { txt: '<b>Cha-ching!</b> That is how every job works. Now grow: open the <b>Crews</b> tab to hire more help.', glow: '[data-tab=crews]' },
+  { txt: 'Each crew needs a <b>truck</b>. Buy one, then <b>hire an applicant</b>. Pick specialists for the jobs you want.', glow: '#truckBtn,#firstHire' },
+  { txt: 'You are in business! Watch for <b>storms and surprises</b>, spend profits in the <b>Office</b>, and claim rewards in <b>Goals</b>. Reach <b>$1M company value</b>!', btn: 'Start my empire', run: true },
+];
+function tutShow() {
+  const t = TUT[S.tut]; if (!t || S.tut >= TUT.length || S.tutDone) { coach.classList.add('hidden'); panel.classList.remove('pad'); return; }
+  panel.classList.toggle('pad', !!t.txt);
+  if (!t.txt) { coach.classList.add('hidden'); return; }
+  coach.className = '';
+  coach.innerHTML = `<p>${t.txt}</p><div class="row">${t.btn ? `<button class="btn pri sm" data-act="tutnext">${t.btn}</button>` : '<span></span>'}<a href="#" data-act="tutskip">Skip tutorial</a></div>`;
+}
+function tutGlow() {
+  document.querySelectorAll('.tut-glow').forEach(e => e.classList.remove('tut-glow'));
+  if (S.tutDone) return; const t = TUT[S.tut]; if (!t || !t.glow) return;
+  const el = (modalOpen() ? modal : document).querySelector(t.glow) || document.querySelector(t.glow); if (el) el.classList.add('tut-glow');
+}
+function tutSet(n) { if (S.tutDone) return; S.tut = n; tutShow(); tutGlow(); }
+function tutAfterTab() { if (S.tut === 5 && tab === 'crews') tutSet(6); tutGlow(); }
+function tutAfterModal() { if (S.tut === 2 && !modalOpen() && S.stats.wins >= 1) tutSet(3); }
+function tutPaused() { if (S.tutDone) return false; const t = TUT[S.tut]; return !!t && !t.run; }
+function tutEnd() { S.tutDone = true; S.tut = TUT.length; tutShow(); tutGlow(); save(); }
+
+/* ---------- actions ---------- */
+function afterAction() { sig = ''; render(true); save(); }
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act],[data-tab],[data-sp],[data-lead]'); if (!el) return;
+  if (el.dataset.tab) { snd.tap(); setTab(el.dataset.tab); return; }
+  if (el.dataset.sp != null) { speed = +el.dataset.sp; snd.tap(); return; }
+  const a = el.dataset.act, id = +el.dataset.id;
+  if (!a) { if (el.dataset.lead && !e.target.closest('button')) { /* card tap => bid */ openBid(+el.dataset.lead); } return; }
   e.preventDefault();
-  const p = toLogical(e); ptr.x = p.x; ptr.y = p.y;
-  if (mode !== 'play' || !G) return;
-  if (p.y < 44 && p.x > W - 56) { pauseGame(); return; }
-  ptr.down = true;
-  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-  if (G.phase === 'shingle') place(); else brush(0);
+  switch (a) {
+    case 'bid': snd.tap(); openBid(id); break;
+    case 'quick': { snd.tap(); const price = +el.dataset.bid; if (S.tut === 1) tutSet(2); submitBidUI(id, price); break; }
+    case 'suggest': { const L = S.leads.find(l => l.id === bid.id); bid.ratio = Math.round(bid.sg / L.price * 100); $('#bidslider').value = bid.ratio; updateBid(); const sb = $('#btnSubmit'); if (S.tut === 2) { sb.classList.add('tut-glow'); $('#btnSuggest').classList.remove('tut-glow'); } break; }
+    case 'submit': { const p = bid.price, bi = bid.id; submitBidUI(bi, p); break; }
+    case 'close': closeModal(); break;
+    case 'auto': S.auto = !S.auto; if (S.auto) E.autoAssign(S); afterAction(); break;
+    case 'autobid': S.autoBid = +el.dataset.v; afterAction(); break;
+    case 'assign': openAssign(id); break;
+    case 'doassign': if (E.assign(S, id, +el.dataset.crew)) { snd.buy(); closeModal(); afterAction(); } else { toast('Not enough cash for materials yet', 'bad'); } break;
+    case 'hire': { const r = E.hire(S, id); if (r.ok) { snd.cha(); pulseCash(); buzz(20); toast('Crew hired!', 'good'); afterAction(); if (S.tut === 6) tutSet(7); } break; }
+    case 'fire': if (confirm('Let this crew go? Their signing fee is not refunded.')) { E.fireCrew(S, id); afterAction(); } break;
+    case 'bonus': if (E.bonusCrew(S, id)) { snd.buy(); toast('Bonus paid. Morale up!', 'good'); afterAction(); } break;
+    case 'buy': { const r = E.buy(S, el.dataset.id); if (r.ok) { snd.buy(); buzz(20); toast('Upgrade bought!', 'good'); afterAction(); } break; }
+    case 'town': { const r = E.buyTown(S, id); if (r.ok) { snd.cha(); buzz([30, 30, 60]); toast('New town opened! Fresh leads are waiting.', 'gold'); afterAction(); } break; }
+    case 'camp': { const r = E.runCampaign(S, el.dataset.id); if (r.ok) { snd.buy(); toast('Campaign launched! 2 new leads.', 'good'); afterAction(); } break; }
+    case 'claimg': { const n = E.claimGoal(S, el.dataset.id); if (n) { snd.cha(); pulseCash(); buzz(30); toast('+' + fmt(n) + ' goal bonus!', 'gold'); coinsBurst(); afterAction(); } break; }
+    case 'claimm': { const n = E.claimMile(S, id); if (n) { snd.cha(); pulseCash(); buzz(30); toast('Milestone bonus +' + fmt(n) + '!', 'gold'); coinsBurst(); afterAction(); } break; }
+    case 'sound': S.sound = !S.sound; if (S.sound) snd.buy(); afterAction(); break;
+    case 'reset': if (confirm('Erase your whole company and start over?')) { localStorage.removeItem(KEY); S = E.newState(); S.speed = 2; location.reload(); } break;
+    case 'retut': S.tutDone = false; S.tut = 0; tutShow(); setTab('leads'); break;
+    case 'evchoice': { const i = +el.dataset.i; E.resolveEvent(S, i); closeModal(); afterAction(); if (S.pending.length) setTimeout(openEvent, 250); break; }
+    case 'tutnext': snd.tap(); if (S.tut === 0) { tutSet(1); setTab('leads'); } else if (S.tut === 3) tutSet(4); else if (S.tut === 7) tutEnd(); break;
+    case 'tutskip': tutEnd(); break;
+    case 'offok': { const n = +el.dataset.id; S.cash += n; S.stats.earned += n; snd.cha(); pulseCash(); closeModal(); afterAction(); break; }
+    case 'empireok': closeModal(); break;
+  }
 });
-canvas.addEventListener('pointermove', e => { const p = toLogical(e); ptr.x = p.x; ptr.y = p.y; if (ptr.down) e.preventDefault(); });
-const up = () => { ptr.down = false; };
-canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up); canvas.addEventListener('lostpointercapture', up);
-window.addEventListener('keydown', e => { if ((e.code === 'Space' || e.code === 'Enter') && mode === 'play' && G && G.phase === 'shingle') { e.preventDefault(); place(); } else if (e.code === 'Escape' && mode === 'play') pauseGame(); });
-canvas.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('visibilitychange', () => { if (document.hidden && mode === 'play' && G && ['tear', 'under', 'shingle'].includes(G.phase)) pauseGame(); });
-function pauseGame() { ptr.down = false; setMode('paused'); }
+modal.addEventListener('input', e => { if (e.target.id === 'bidslider' && bid) { bid.ratio = +e.target.value; updateBid(); } });
+function coinsBurst() { for (let i = 0; i < 18; i++) coins.push({ x: 195 + (Math.random() - 0.5) * 120, y: 60, vx: (Math.random() - 0.5) * 160, vy: -140 - Math.random() * 100, t: 0 }); }
 
-/* ---------- menus ---------- */
-function refreshSound() { const t = 'Sound: ' + (save.sound ? 'On' : 'Off'); $('#btnSound').textContent = t; $('#btnSound2').textContent = t; }
-function toggleSound() { save.sound = !save.sound; persist(); refreshSound(); sfx.buy(); }
-function renderBoard() {
-  $('#boardMoney').textContent = '$' + save.money;
-  $('#jobs').innerHTML = LEVELS.map((d, i) => {
-    const lock = i >= save.unlocked, st = save.stars[i] || 0;
-    return `<div class="card ${lock ? 'locked' : ''}"><div class="num">${i + 1}</div><div class="info"><b>${d.name}</b>
-      <small>${d.cols}×${d.rows} roof · storm in ${d.time + 8 * upLvl('radio')}s · $${d.pay}+</small><br>
-      <span class="st">${lock ? '<small>Locked: beat job ${i}</small>' : starHtml(st, 5)}</span></div>
-      <button class="btn" data-job="${i}" ${lock ? 'disabled' : ''}>${st ? 'Replay' : 'Start'}</button></div>`;
-  }).join('');
-  $('#garage').innerHTML = UPG.map(u => {
-    const lv = upLvl(u.id), max = u.costs.length, cost = u.costs[lv];
-    const pips = Array.from({ length: max }, (_, i) => `<i class="${i < lv ? 'on' : ''}"></i>`).join('');
-    const btn = lv >= max ? '<button class="btn" disabled>MAX</button>' : `<button class="btn" data-buy="${u.id}" ${save.money < cost ? 'disabled' : ''}>$${cost}</button>`;
-    return `<div class="card"><div class="info"><b>${u.name}<span class="pips">${pips}</span></b><small>Now: ${u.names[lv]}${lv < max ? ' → ' + u.names[lv + 1] : ''}<br>${u.desc}</small></div>${btn}</div>`;
-  }).join('');
+/* ---------- engine events -> feedback ---------- */
+function handleFx() {
+  const q = S.fx2; if (!q || !q.length) return; S.fx2 = [];
+  for (const f of q) {
+    if (f.type === 'win') { const j = S.jobs.find(j => j.id === f.job); if (j) burst(j.town, j.lot, '+' + fmt(f.amt) + ' deposit', '#7dffa8', 6); pulseCash(); }
+    else if (f.type === 'done') { burst(f.town, f.lot, '+' + fmt(f.amt), '#ffe066', 18); pulseCash(); snd.cha(); buzz(25); toast('Job paid ' + fmt(f.amt) + ' (' + (f.profit >= 0 ? '+' : '') + fmt(f.profit) + ' profit)', 'gold'); if (S.tut === 4) { tutSet(5); } }
+    else if (f.type === 'payday') toast('Payday! Crews paid ' + fmt(f.amt), 'bad');
+    else if (f.type === 'month') toast(f.month + ' report: ' + (f.net >= 0 ? '+' : '') + fmt(f.net) + ' profit', f.net >= 0 ? 'good' : 'bad');
+    else if (f.type === 'hail') { flash = 1; buzz([60, 40, 60]); toast('Hail storm! Storm leads incoming', 'bad'); }
+    else if (f.type === 'rain') toast('Rain delay: crews wait it out', 'bad');
+    else if (f.type === 'viral') { toast('Your review went viral!', 'gold'); coinsBurst(); }
+    else if (f.type === 'cancel') toast('A customer canceled: crews took too long', 'bad');
+    else if (f.type === 'empire') setTimeout(() => openModal(`<div class="result"><h2 class="good">ROOFING EMPIRE!</h2><div class="big pos">$1,000,000</div><p>You grew a tiny crew into a million-dollar roofing company. Amazing! Keep going: new goals unlock up to $10M.</p><div class="btns"><button class="btn pri" data-act="empireok">Keep building</button></div></div>`, true), 600);
+  }
 }
-function showTab(t) { $('#jobs').classList.toggle('hidden', t !== 'jobs'); $('#garage').classList.toggle('hidden', t !== 'garage'); $('#tabJobs').classList.toggle('on', t === 'jobs'); $('#tabGarage').classList.toggle('on', t === 'garage'); }
-function openBoard(tab) { renderBoard(); showTab(tab || 'jobs'); setMode('board'); }
-$('#btnPlay').onclick = () => openBoard('jobs');
-$('#btnHow').onclick = () => { $('#howto').classList.remove('hidden'); $('#title').classList.add('hidden'); };
-$('#btnHowBack').onclick = () => { $('#howto').classList.add('hidden'); $('#title').classList.remove('hidden'); };
-$('#btnSound').onclick = toggleSound; $('#btnSound2').onclick = toggleSound;
-$('#btnReset').onclick = e => { e.preventDefault(); if (confirm('Erase your earnings, upgrades and stars?')) { save = defaultSave(); persist(); refreshSound(); } };
-$('#btnBoardBack').onclick = () => setMode('menu');
-$('#tabJobs').onclick = () => showTab('jobs'); $('#tabGarage').onclick = () => showTab('garage');
-$('#jobs').addEventListener('click', e => { const b = e.target.closest('[data-job]'); if (b && !b.disabled) startJob(+b.dataset.job); });
-$('#garage').addEventListener('click', e => {
-  const b = e.target.closest('[data-buy]'); if (!b || b.disabled) return;
-  const u = UPG.find(x => x.id === b.dataset.buy), lv = upLvl(u.id), cost = u.costs[lv];
-  if (lv < u.costs.length && save.money >= cost) { save.money -= cost; save.up[u.id] = lv + 1; persist(); sfx.buy(); renderBoard(); }
-});
-$('#btnResume').onclick = () => setMode('play');
-$('#btnQuit').onclick = () => openBoard('jobs');
-$('#btnNext').onclick = () => startJob(Math.min(LEVELS.length - 1, lastLv + 1));
-$('#btnRetry').onclick = () => startJob(lastLv);
-$('#btnGarage').onclick = () => openBoard('garage');
-$('#btnMenu').onclick = () => openBoard('jobs');
 
-/* ---------- boot ---------- */
+/* ---------- offline earnings ---------- */
+function maybeOffline() {
+  if (offlineShown || wasNew || !S.saved) return;
+  const away = (Date.now() - S.saved) / 1000; offlineShown = true;
+  const n = E.offlineEarn(S, away); if (n <= 0 || away < 120) return;
+  const hrs = Math.min(6, away / 3600);
+  openModal(`<div class="result"><h2 class="good">Welcome back!</h2><p>You were away about ${hrs < 1 ? Math.round(hrs * 60) + ' minutes' : hrs.toFixed(1) + ' hours'}. Happy customers kept calling, and your crews picked up repeat work.</p><div class="big pos">+${fmt(n)}</div><div class="btns"><button class="btn gold" data-act="offok" data-id="${n}">Collect</button></div></div>`, true);
+}
+
+/* ---------- main loop ---------- */
+let last = 0, uiT = 0;
 function frame(now) {
-  const dt = Math.min(0.05, (now - (frame.last || now)) / 1000); frame.last = now;
-  update(dt); render(dt);
+  const dt = Math.min(0.1, (now - (last || now)) / 1000); last = now;
+  if (S.pending.length && !modalOpen() && !hidden) openEvent();
+  if (!modalOpen() && !hidden && !tutPaused() && speed > 0 && !S.pending.length) {
+    E.advance(S, dt * speed / DAY_SEC);
+    if (S.pending.length && !modalOpen()) openEvent();
+  }
+  handleFx();
+  syncRows(); drawTown(dt); updateHud(dt);
+  uiT += dt;
+  if (uiT > 0.25) { uiT = 0; render(false); updateLive(); }
+  if (now - lastSave > 5000) { lastSave = now; save(); }
   requestAnimationFrame(frame);
 }
-window.addEventListener('resize', resize);
-layoutFor(MENU_DEF); MENU = newGame(1, true); resize(); MENU = newGame(1, true);
-MENU.cells.forEach((c, i) => { if (i % 5 === 0) { c.hp = 0; } });
-refreshSound(); setMode('menu');
+document.addEventListener('visibilitychange', () => { hidden = document.hidden; if (hidden) { save(); } else { offlineShown = false; maybeOffline(); last = 0; } });
+window.addEventListener('pagehide', save);
+window.addEventListener('resize', resizeCanvas);
+
+/* ---------- boot ---------- */
+if (wasNew && !S.tutDone) { S.tut = 0; speed = 2; }
+syncRows(); setTab('leads'); tutShow(); tutGlow(); maybeOffline();
 requestAnimationFrame(frame);
-// small hook used by automated tests
-window.RR = { get g() { return G; }, get L() { return L; }, get mode() { return mode; }, stripOffset: () => (G ? stripOffset() : 0), perfectTol: () => (G ? stripParams().perfect : 0), save: () => save };
+window.RR = {
+  get S() { return S; }, E, get tab() { return tab; },
+  forceEvent(id) { E.forceEvent(S, id, S.crews[0]); },
+  skip(days) { let n = days; while (n > 0) { E.advance(S, Math.min(1, n)); n -= 1; while (S.pending.length) E.resolveEvent(S, 0); } sig = ''; },
+  setSpeed(v) { speed = v; }, openEvent,
+};
 })();

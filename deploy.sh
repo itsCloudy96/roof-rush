@@ -15,7 +15,7 @@ git config user.name Cloudy; git config user.email "$EMAIL"
 git remote get-url origin >/dev/null 2>&1 || git remote add origin "https://github.com/$LOGIN/$REPO.git"
 git add -A; git diff --cached --quiet || git commit -q -m "${1:-Update Cloudy Game Dev Kits}"
 git push -q -u origin main
-TMP=$(mktemp -d); mkdir -p "$TMP"; cp index.html style.css game.js README.md LICENSE "$TMP"/; ls screenshot.png >/dev/null 2>&1 && cp screenshot.png "$TMP"/
+TMP=$(mktemp -d); mkdir -p "$TMP"; cp index.html style.css engine.js game.js README.md LICENSE "$TMP"/; ls screenshot.png >/dev/null 2>&1 && cp screenshot.png "$TMP"/
 ( cd "$TMP" && git init -q -b gh-pages && git config user.name Cloudy && git config user.email "$EMAIL" && git add -A && git commit -q -m "Deploy $(date -u +%FT%TZ)" && git push -q -f "https://github.com/$LOGIN/$REPO.git" gh-pages )
 rm -rf "$TMP"
 if ! gh api "repos/$LOGIN/$REPO/pages" >/dev/null 2>&1; then
